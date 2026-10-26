@@ -2,6 +2,8 @@
 // Ground modes use OSRM (OpenStreetMap's free routing engine — no API key, unlike Google Maps).
 // Airplane mode does not use road routing: it uses the departure/arrival difference when available,
 // otherwise a great-circle flight estimate.
+import { modeIcon } from './transportModes'
+
 export const isFlight = (mode: string) => /air|flight|plane|fly/i.test(mode || '')
 
 export interface LatLng { lat: number; lng: number }
@@ -82,8 +84,17 @@ export async function getQuickestRoute(from: LatLng, to: LatLng, mode: string): 
     const km = haversineKm(from, to)
     return { minutes: Math.max(20, Math.round(km / 750 * 60) + 30), distanceKm: km, path: greatCirclePath(from, to), source: 'shortest flight route (great-circle, estimated time)' }
   }
+  if (/walk|foot/i.test(mode || '')) {
+    const km = haversineKm(from, to)
+    return { minutes: Math.max(2, Math.round(km / 5 * 60)), distanceKm: km, path: [from, to], source: 'walking estimate' }
+  }
+  if (/train|rail/i.test(mode || '')) {
+    const km = haversineKm(from, to)
+    return { minutes: Math.max(15, Math.round(km / 90 * 60) + 10), distanceKm: km, path: greatCirclePath(from, to, 24), source: 'rail estimate' }
+  }
   try {
-    const url = `https://router.project-osrm.org/route/v1/driving/${from.lng},${from.lat};${to.lng},${to.lat}?overview=full&geometries=geojson&alternatives=3&steps=false`
+    const profile = /bike|cycl/i.test(mode || '') ? 'bike' : 'driving'
+    const url = `https://router.project-osrm.org/route/v1/${profile}/${from.lng},${from.lat};${to.lng},${to.lat}?overview=full&geometries=geojson&alternatives=3&steps=false`
     const r = await fetch(url)
     const j = await r.json()
     const routes: any[] = j?.routes ?? []
@@ -129,18 +140,58 @@ export function formatCompactDuration(minutes: number | null | undefined): strin
   return `${Number.isInteger(h) ? h : h.toFixed(1)}h`
 }
 
-export interface GapTravel { minutes: number; type: string; icon: string }
+export interface GapTravel { minutes: number; type: string; icon: string; mode: string }
+
+function gapFromMode(mode: string, minutes: number): GapTravel {
+  const type =
+    /air|flight|plane/i.test(mode) ? 'Flight'
+      : /walk/i.test(mode) ? 'Walking'
+        : /train|rail/i.test(mode) ? 'Train'
+          : /bus/i.test(mode) ? 'Bus'
+            : /ferry/i.test(mode) ? 'Ferry'
+              : /transit|metro|subway/i.test(mode) ? 'Transit'
+                : 'Driving'
+  return { minutes, type, icon: modeIcon(mode), mode: type === 'Flight' ? 'Airplane' : type === 'Driving' ? 'Driving' : mode }
+}
 
 /** Estimated travel between two neighbouring stops that have no transit item between them. */
-export async function estimateGapTravel(from: LatLng, to: LatLng): Promise<GapTravel> {
+export async function estimateGapTravel(from: LatLng, to: LatLng, preferredMode?: string | null): Promise<GapTravel> {
   const km = haversineKm(from, to)
-  if (km <= 2) return { minutes: Math.max(2, Math.round(km / 5 * 60)), type: 'Walking', icon: '🚶' }
-  if (km > 400) return { minutes: Math.max(20, Math.round(km / 750 * 60) + 30), type: 'Flight', icon: '✈️' }
+  const mode = (preferredMode || '').trim()
+
+  if (mode) {
+    if (/walk/i.test(mode)) {
+      return gapFromMode('Walking', Math.max(2, Math.round(km / 5 * 60)))
+    }
+    if (/air|flight|plane/i.test(mode)) {
+      return gapFromMode('Airplane', Math.max(20, Math.round(km / 750 * 60) + 30))
+    }
+    if (/train|rail/i.test(mode)) {
+      return gapFromMode('Train', Math.max(15, Math.round(km / 90 * 60) + 10))
+    }
+    if (/bus/i.test(mode)) {
+      return gapFromMode('Bus', Math.max(10, Math.round(km / 35 * 60) + 5))
+    }
+    if (/ferry/i.test(mode)) {
+      return gapFromMode('Ferry', Math.max(20, Math.round(km / 40 * 60) + 15))
+    }
+    if (/transit|metro|subway|public/i.test(mode)) {
+      return gapFromMode('Public Transit', Math.max(8, Math.round(km / 25 * 60) + 8))
+    }
+    // Driving / default ground
+    try {
+      const route = await getQuickestRoute(from, to, 'Driving')
+      if (route) return gapFromMode('Driving', route.minutes)
+    } catch { /* fall through */ }
+    return gapFromMode('Driving', Math.max(5, Math.round(km / 50 * 60)))
+  }
+
+  if (km <= 2) return gapFromMode('Walking', Math.max(2, Math.round(km / 5 * 60)))
+  if (km > 400) return gapFromMode('Airplane', Math.max(20, Math.round(km / 750 * 60) + 30))
   const route = await getQuickestRoute(from, to, 'Car')
-  if (route && route.source.includes('OSRM')) return { minutes: route.minutes, type: 'Driving', icon: '🚗' }
-  // No road route (e.g. across water) — suggest flying for longer hops, driving estimate otherwise
-  if (km > 150) return { minutes: Math.max(20, Math.round(km / 750 * 60) + 30), type: 'Flight', icon: '✈️' }
-  return { minutes: Math.max(5, Math.round(km / 50 * 60)), type: 'Driving', icon: '🚗' }
+  if (route && route.source.includes('OSRM')) return gapFromMode('Driving', route.minutes)
+  if (km > 150) return gapFromMode('Airplane', Math.max(20, Math.round(km / 750 * 60) + 30))
+  return gapFromMode('Driving', Math.max(5, Math.round(km / 50 * 60)))
 }
 
 export const addMinutes = (isoLocal: string, minutes: number): string => {

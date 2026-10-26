@@ -15,6 +15,8 @@ import { buildPinPopup, categoryFromItemType, emojiForKind, fetchExperiences, fe
 import { resolvePlaceImage, resolveTripImage } from '../lib/tripImages'
 import { destinationTravelLinks, poiTravelLinks } from '../lib/travelApps'
 import { shortAddress, placePrimary, placeSecondary, hotelStayTitle, hotelPhase } from '../lib/formatPlace'
+import { dayColor, TRANSIT_MODES, GAP_MODES } from '../lib/transportModes'
+import { lookupFlights, type FlightOption } from '../lib/flights'
 import DestinationThumb from '../components/DestinationThumb'
 import TranslatedText from '../components/TranslatedText'
 
@@ -80,11 +82,13 @@ function PlaceSearch({
   onPick,
   near,
   placeholder = 'Type a short place name…',
+  onHover,
 }: {
   label: string
   onPick: (r: GeoResult) => void
   near?: { lat: number; lng: number } | null
   placeholder?: string
+  onHover?: (r: GeoResult | null) => void
 }) {
   const [q, setQ] = useState('')
   const [res, setRes] = useState<GeoResult[]>([])
@@ -134,11 +138,16 @@ function PlaceSearch({
                 key={`${r.lat}-${r.lng}-${i}`}
                 type="button"
                 role="option"
+                onMouseEnter={() => onHover?.(r)}
+                onMouseLeave={() => onHover?.(null)}
+                onFocus={() => onHover?.(r)}
+                onBlur={() => onHover?.(null)}
                 onClick={() => {
                   const c = compactGeo(r)
                   onPick(c)
                   setPicked(c.name)
                   setRes([])
+                  onHover?.(null)
                 }}
               >
                 <span className="ac-name">{primary}</span>
@@ -168,6 +177,11 @@ export default function TripPage() {
   const [mode, setMode] = useState('Airplane')
   const [tStart, setTStart] = useState('')
   const [tEnd, setTEnd] = useState('')
+  const [flightOptions, setFlightOptions] = useState<FlightOption[]>([])
+  const [flightStatus, setFlightStatus] = useState<'idle' | 'loading' | 'ready' | 'empty' | 'error'>('idle')
+  const [flightMsg, setFlightMsg] = useState('')
+  const [flightLink, setFlightLink] = useState('')
+  const [gapModes, setGapModes] = useState<Record<string, string>>({})
   const [hotel, setHotel] = useState<GeoResult | null>(null)
   const [hIn, setHIn] = useState('')
   const [hOut, setHOut] = useState('')
@@ -175,6 +189,7 @@ export default function TripPage() {
   const [airbnbAddress, setAirbnbAddress] = useState('')
   const [hotelPicks, setHotelPicks] = useState<MapPoi[]>([])
   const [hotelListStatus, setHotelListStatus] = useState<'idle' | 'loading' | 'ready' | 'empty'>('idle')
+  const [hotelPreview, setHotelPreview] = useState<{ id?: string; lat: number; lng: number; name: string } | null>(null)
   const [expPicks, setExpPicks] = useState<MapPoi[]>([])
   const [expPickStatus, setExpPickStatus] = useState<'idle' | 'loading' | 'ready' | 'empty'>('idle')
   const [expTime, setExpTime] = useState('')
@@ -285,12 +300,16 @@ export default function TripPage() {
     const a = sortedForGaps[i], b = sortedForGaps[i + 1]
     if (a.type !== 'transit' && b.type !== 'transit' && a.lat != null && a.lng != null && b.lat != null && b.lng != null) gapPairs.push([a, b])
   }
-  const gapSignature = gapPairs.map(([a, b]) => `${a.id}:${a.lat},${a.lng}->${b.id}:${b.lat},${b.lng}`).join('|')
+  const gapSignature = gapPairs.map(([a, b]) => `${a.id}:${a.lat},${a.lng}->${b.id}:${b.lat},${b.lng}:${gapModes[`${a.id}->${b.id}`] || ''}`).join('|')
   useEffect(() => {
     let cancelled = false
     gapPairs.forEach(async ([a, b]) => {
       const key = `${a.id}->${b.id}`
-      const est = await estimateGapTravel({ lat: a.lat!, lng: a.lng! }, { lat: b.lat!, lng: b.lng! })
+      const est = await estimateGapTravel(
+        { lat: a.lat!, lng: a.lng! },
+        { lat: b.lat!, lng: b.lng! },
+        gapModes[key] || null,
+      )
       if (!cancelled) setGapInfo(prev => ({ ...prev, [key]: est }))
     })
     return () => { cancelled = true }
@@ -318,45 +337,60 @@ export default function TripPage() {
     return () => { cancelled = true }
   }, [rightTab, trip?.place_lat, trip?.place_lng, trip?.place])
 
-  // Per-day route between that day's stops (e.g. Skytree → Tokyo Tower → Shibuya)
+  // Routes for one day or all days (multi-color when All days is selected)
   const dayRouteSignature = useMemo(() => {
-    if (!selectedDay) return ''
-    return items
-      .filter(i => i.start_at.slice(0, 10) === selectedDay && i.lat != null && i.lng != null)
-      .sort((a, b) => a.sort_order - b.sort_order || a.start_at.localeCompare(b.start_at))
-      .map(i => `${i.id}:${i.lat},${i.lng}`)
-      .join('|')
-  }, [selectedDay, items])
+    const daysToRoute = selectedDay
+      ? [selectedDay]
+      : [...new Set(items.map(i => i.start_at.slice(0, 10)).filter(Boolean))].sort()
+    return daysToRoute.map(day => {
+      const stops = items
+        .filter(i => i.start_at.slice(0, 10) === day && i.lat != null && i.lng != null)
+        .sort((a, b) => a.sort_order - b.sort_order || a.start_at.localeCompare(b.start_at))
+      const gapPart = stops.slice(0, -1).map((a, i) => {
+        const b = stops[i + 1]
+        const key = `${a.id}->${b.id}`
+        return `${key}:${gapModes[key] || ''}`
+      }).join(',')
+      return `${day}:${stops.map(i => `${i.id}:${i.lat},${i.lng}`).join('|')}:${gapPart}`
+    }).join('||')
+  }, [selectedDay, items, gapModes])
 
   useEffect(() => {
-    if (!selectedDay || !dayRouteSignature) {
+    if (!dayRouteSignature) {
       setDayRoutePaths({})
       return
     }
     let cancelled = false
-    const stops = items
-      .filter(i => i.start_at.slice(0, 10) === selectedDay && i.lat != null && i.lng != null)
-      .sort((a, b) => a.sort_order - b.sort_order || a.start_at.localeCompare(b.start_at))
+    const daysToRoute = selectedDay
+      ? [selectedDay]
+      : [...new Set(items.map(i => i.start_at.slice(0, 10)).filter(Boolean))].sort()
     ;(async () => {
       const paths: Record<string, LatLng[]> = {}
-      for (let i = 0; i < stops.length - 1; i++) {
-        const a = stops[i], b = stops[i + 1]
-        const key = `${a.id}->${b.id}`
-        try {
-          const route = await getQuickestRoute(
-            { lat: a.lat!, lng: a.lng! },
-            { lat: b.lat!, lng: b.lng! },
-            a.type === 'transit' ? (a.mode_of_transport || 'car') : 'foot',
-          )
-          paths[key] = route?.path?.length ? route.path : [{ lat: a.lat!, lng: a.lng! }, { lat: b.lat!, lng: b.lng! }]
-        } catch {
-          paths[key] = [{ lat: a.lat!, lng: a.lng! }, { lat: b.lat!, lng: b.lng! }]
+      for (const day of daysToRoute) {
+        const stops = items
+          .filter(i => i.start_at.slice(0, 10) === day && i.lat != null && i.lng != null)
+          .sort((a, b) => a.sort_order - b.sort_order || a.start_at.localeCompare(b.start_at))
+        for (let i = 0; i < stops.length - 1; i++) {
+          const a = stops[i], b = stops[i + 1]
+          const key = `${a.id}->${b.id}`
+          const mode = gapModes[key]
+            || (a.type === 'transit' ? (a.mode_of_transport || 'Driving') : 'Walking')
+          try {
+            const route = await getQuickestRoute(
+              { lat: a.lat!, lng: a.lng! },
+              { lat: b.lat!, lng: b.lng! },
+              mode,
+            )
+            paths[key] = route?.path?.length ? route.path : [{ lat: a.lat!, lng: a.lng! }, { lat: b.lat!, lng: b.lng! }]
+          } catch {
+            paths[key] = [{ lat: a.lat!, lng: a.lng! }, { lat: b.lat!, lng: b.lng! }]
+          }
         }
       }
       if (!cancelled) setDayRoutePaths(paths)
     })()
     return () => { cancelled = true }
-  }, [dayRouteSignature, selectedDay, items])
+  }, [dayRouteSignature, selectedDay, items, gapModes])
 
   /** Saved places near booked flights/hotels that are not already on this trip. */
   const savedPlaceSuggestions = useMemo(() => {
@@ -474,15 +508,18 @@ export default function TripPage() {
     await api.saveItems(all.filter(x => x.id === it.id || x.group_id === it.group_id))
   }
   const remove = async (it: ItineraryItem) => { setItems(items.filter(x => x.id !== it.id)); await api.deleteItem(it.id) }
-  const addTransit = async () => {
+  const addTransit = async (override?: { start?: string; end?: string; title?: string; duration?: number }) => {
     if (!from || !to) return alert('Pick both From and To places')
-    const calc = await calculateTransitMinutes(from, to, mode, tStart, tEnd)
-    const dur = calc?.minutes ?? null
-    const end = dur != null && tStart && !isFlight(mode) ? addMinutes(tStart, dur) : tEnd
+    const start = override?.start || tStart
+    const endIn = override?.end || tEnd
+    const calc = await calculateTransitMinutes(from, to, mode, start, endIn)
+    const dur = override?.duration ?? calc?.minutes ?? null
+    const end = dur != null && start && !isFlight(mode) ? addMinutes(start, dur) : endIn
+    const title = override?.title || `${from.name} → ${to.name}`
     addItems([{
-      ...baseItem(trip, profile.id, items.length), type: 'transit', title: `${from.name} → ${to.name}`,
+      ...baseItem(trip, profile.id, items.length), type: 'transit', title,
       from_name: from.name, from_lat: from.lat, from_lng: from.lng, to_name: to.name, to_lat: to.lat, to_lng: to.lng,
-      lat: to.lat, lng: to.lng, place_name: shortAddress(to.display, 2) || to.name, start_at: tStart, end_at: end, duration_minutes: dur, mode_of_transport: mode,
+      lat: to.lat, lng: to.lng, place_name: shortAddress(to.display, 2) || to.name, start_at: start, end_at: end, duration_minutes: dur, mode_of_transport: mode,
     }])
   }
   const recalcTransit = async (it: ItineraryItem) => {
@@ -586,53 +623,68 @@ export default function TripPage() {
     return map
   })()
 
+  const tripDays = [...new Set(ordered.map(i => i.start_at.slice(0, 10)).filter(Boolean))].sort()
+  const dayIndexOf = (day: string) => {
+    const ix = days.indexOf(day)
+    if (ix >= 0) return ix
+    const j = tripDays.indexOf(day)
+    return j >= 0 ? j : 0
+  }
+
   const mapSourceItems = selectedDay
     ? ordered.filter(i => i.start_at.slice(0, 10) === selectedDay && i.lat != null && i.lng != null)
     : ordered.filter(i => i.lat != null && i.lng != null)
 
-  const pins = mapSourceItems.map((i, ix) => {
-    const title = shortAddress(i.title, 1) || i.title || 'Stop'
-    const kind = categoryFromItemType(i.type, i.mode_of_transport)
-    return {
-      id: i.id,
-      lat: i.lat!,
-      lng: i.lng!,
-      name: title,
-      number: ix + 1,
-      kind,
-      savable: true,
-      label: buildPinPopup({
-        title,
-        category: kind,
-        place: shortAddress(i.place_name),
-        lat: i.lat!,
-        lng: i.lng!,
-        savable: true,
-        pinId: i.id,
-      }),
+  // Per-day numbering when showing all days
+  const pins = (() => {
+    const out: {
+      id: string; lat: number; lng: number; name: string; number: number; kind: string
+      savable: boolean; color?: string; label: string
+    }[] = []
+    if (selectedDay) {
+      mapSourceItems.forEach((i, ix) => {
+        const title = shortAddress(i.title, 1) || i.title || 'Stop'
+        const kind = categoryFromItemType(i.type, i.mode_of_transport)
+        const color = dayColor(dayIndexOf(selectedDay))
+        out.push({
+          id: i.id, lat: i.lat!, lng: i.lng!, name: title, number: ix + 1, kind, savable: true, color,
+          label: buildPinPopup({
+            title, category: kind, place: shortAddress(i.place_name),
+            lat: i.lat!, lng: i.lng!, savable: true, itinerary: false, pinId: i.id,
+          }),
+        })
+      })
+    } else {
+      const counters: Record<string, number> = {}
+      mapSourceItems.forEach(i => {
+        const day = i.start_at.slice(0, 10)
+        counters[day] = (counters[day] || 0) + 1
+        const title = shortAddress(i.title, 1) || i.title || 'Stop'
+        const kind = categoryFromItemType(i.type, i.mode_of_transport)
+        const color = dayColor(dayIndexOf(day))
+        out.push({
+          id: i.id, lat: i.lat!, lng: i.lng!, name: title, number: counters[day], kind, savable: true, color,
+          label: buildPinPopup({
+            title, category: kind, place: `${fmtDate(day)} · ${shortAddress(i.place_name)}`,
+            lat: i.lat!, lng: i.lng!, savable: true, itinerary: false, pinId: i.id,
+          }),
+        })
+      })
     }
-  })
-  if (pins.length === 0 && !selectedDay && trip.place_lat != null && trip.place_lng != null) {
-    const title = shortAddress(trip.place, 1) || trip.name || 'Destination'
-    pins.push({
-      id: `trip-dest-${trip.id}`,
-      lat: trip.place_lat,
-      lng: trip.place_lng,
-      name: title,
-      kind: 'attraction',
-      savable: true,
-      number: undefined as unknown as number,
-      label: buildPinPopup({
-        title,
-        category: 'attraction',
-        place: shortAddress(trip.place),
-        lat: trip.place_lat,
-        lng: trip.place_lng,
-        savable: true,
-        pinId: `trip-dest-${trip.id}`,
-      }),
-    })
-  }
+    if (out.length === 0 && !selectedDay && trip.place_lat != null && trip.place_lng != null) {
+      const title = shortAddress(trip.place, 1) || trip.name || 'Destination'
+      out.push({
+        id: `trip-dest-${trip.id}`,
+        lat: trip.place_lat, lng: trip.place_lng, name: title, kind: 'attraction',
+        savable: true, number: 1, color: dayColor(0),
+        label: buildPinPopup({
+          title, category: 'attraction', place: shortAddress(trip.place),
+          lat: trip.place_lat, lng: trip.place_lng, savable: true, itinerary: true, pinId: `trip-dest-${trip.id}`,
+        }),
+      })
+    }
+    return out
+  })()
 
   const transitSegments = ordered
     .filter(i => i.type === 'transit' && i.from_lat != null && i.from_lng != null && i.to_lat != null && i.to_lng != null)
@@ -641,24 +693,29 @@ export default function TripPage() {
       id: i.id,
       fromLat: i.from_lat!, fromLng: i.from_lng!, toLat: i.to_lat!, toLng: i.to_lng!,
       path: routePaths[i.id],
+      color: dayColor(dayIndexOf(i.start_at.slice(0, 10))),
       label: `<b>${i.title}</b><br/>${shortAddress(i.from_name, 1)} → ${shortAddress(i.to_name, 1)}`,
     }))
 
-  const dayPathSegments = selectedDay
-    ? mapSourceItems.slice(0, -1).map((a, i) => {
-      const b = mapSourceItems[i + 1]
+  const daysForPaths = selectedDay ? [selectedDay] : tripDays
+  const dayPathSegments = daysForPaths.flatMap(day => {
+    const stops = ordered.filter(i => i.start_at.slice(0, 10) === day && i.lat != null && i.lng != null)
+    const color = dayColor(dayIndexOf(day))
+    return stops.slice(0, -1).map((a, i) => {
+      const b = stops[i + 1]
       const key = `${a.id}->${b.id}`
       return {
-        id: `day-${key}`,
+        id: `day-${day}-${key}`,
         fromLat: a.lat!, fromLng: a.lng!, toLat: b.lat!, toLng: b.lng!,
         path: dayRoutePaths[key],
-        label: `<b>Day route</b><br/>${shortAddress(a.title || a.place_name, 1)} → ${shortAddress(b.title || b.place_name, 1)}`,
+        color,
+        label: `<b>${fmtDate(day)}</b><br/>${shortAddress(a.title || a.place_name, 1)} → ${shortAddress(b.title || b.place_name, 1)}`,
       }
     })
-    : []
+  })
 
-  const segments = selectedDay ? [...dayPathSegments, ...transitSegments] : transitSegments
-  const showDayRoute = Boolean(selectedDay && mapSourceItems.length > 1)
+  const segments = [...dayPathSegments, ...transitSegments]
+  const showDayRoute = false // day paths already in segments; avoid extra dashed overlay
   const dayLoad = (day: string) => {
     const di = ordered.filter(i => i.start_at.slice(0, 10) === day)
     return { count: di.length, mins: di.reduce((s, i) => s + (i.duration_minutes || 60), 0), items: di }
@@ -736,6 +793,58 @@ export default function TripPage() {
     } catch (e: any) {
       alert(`Could not save place: ${e.message}`)
     }
+  }
+
+  const addPlaceToItinerary = async (payload: SavePlacePayload) => {
+    if (!profile) return
+    const cat = (payload.category || 'other').toLowerCase()
+    const when = aTime || `${trip.start_date}T11:00`
+    if (cat === 'hotel') {
+      const gid = newId()
+      const endDay = trip.end_date || trip.start_date
+      await addItems([
+        {
+          ...baseItem(trip, profile.id, items.length),
+          type: 'hotel',
+          group_id: gid,
+          subtype: 'checkin',
+          title: `${payload.name} (Check-in)`,
+          place_name: payload.place_name || payload.name,
+          lat: payload.lat,
+          lng: payload.lng,
+          start_at: when,
+          end_at: when,
+        },
+        {
+          ...baseItem(trip, profile.id, items.length + 1),
+          type: 'hotel',
+          group_id: gid,
+          subtype: 'checkout',
+          title: `${payload.name} (Check-out)`,
+          place_name: payload.place_name || payload.name,
+          lat: payload.lat,
+          lng: payload.lng,
+          start_at: `${endDay}T11:00`,
+          end_at: `${endDay}T11:00`,
+        },
+      ])
+    } else {
+      const type: ItineraryItem['type'] =
+        cat === 'restaurant' || cat === 'cafe' ? 'restaurant' : 'activity'
+      await addItems([{
+        ...baseItem(trip, profile.id, items.length),
+        type,
+        title: payload.name,
+        place_name: payload.place_name || payload.name,
+        lat: payload.lat,
+        lng: payload.lng,
+        start_at: when,
+        end_at: when,
+      }])
+    }
+    setSaveMsg(`Added “${payload.name}” to itinerary`)
+    window.setTimeout(() => setSaveMsg(''), 2500)
+    setMobilePanel('create')
   }
 
   const saveItemPlace = async (it: ItineraryItem) => {
@@ -878,7 +987,14 @@ export default function TripPage() {
                 <label>From</label><input value={it.from_name} onChange={e => update({ ...it, from_name: e.target.value })} />
                 <label>To</label><input value={it.to_name} onChange={e => update({ ...it, to_name: e.target.value })} />
                 <label>Mode of Transportation</label>
-                <input value={it.mode_of_transport} onChange={e => update({ ...it, mode_of_transport: e.target.value })} placeholder="Airplane, Train, Bus, Public Transit…" />
+                <select value={it.mode_of_transport || 'Airplane'} onChange={e => update({ ...it, mode_of_transport: e.target.value })}>
+                  {TRANSIT_MODES.map(m => (
+                    <option key={m.value} value={m.value}>{m.icon} {m.label}</option>
+                  ))}
+                  {it.mode_of_transport && !TRANSIT_MODES.some(m => m.value === it.mode_of_transport) && (
+                    <option value={it.mode_of_transport}>{it.mode_of_transport}</option>
+                  )}
+                </select>
                 <label>Departure</label><input type="datetime-local" value={it.start_at} onChange={e => update({ ...it, start_at: e.target.value })} />
                 <label>Arrival</label>
                 <input
@@ -965,13 +1081,31 @@ export default function TripPage() {
     const ix = ordered.findIndex(x => x.id === it.id)
     const next = ix >= 0 ? ordered[ix + 1] : undefined
     if (!next || it.type === 'transit' || next.type === 'transit') return null
-    const info = gapInfo[`${it.id}->${next.id}`]
+    const key = `${it.id}->${next.id}`
+    const info = gapInfo[key]
     const hasCoords = it.lat != null && it.lng != null && next.lat != null && next.lng != null
+    const currentMode = gapModes[key] || info?.mode || 'Driving'
     return (
-      <div key={`gap-${it.id}-${next.id}`} className="place-gap">
+      <div key={key} className="place-gap">
         <div className="place-gap-line" />
-        <div className="place-gap-pill">
-          {hasCoords ? (info ? `${info.icon} ${info.type} · ${formatCompactDuration(info.minutes)}` : 'Calculating travel…') : 'Travel time unknown'}
+        <div className="place-gap-pill place-gap-editable">
+          {hasCoords ? (
+            <>
+              <select
+                className="gap-mode-select"
+                value={GAP_MODES.some(m => m.value === currentMode) ? currentMode : 'Driving'}
+                aria-label="Travel mode between stops"
+                onChange={e => setGapModes(prev => ({ ...prev, [key]: e.target.value }))}
+              >
+                {GAP_MODES.map(m => (
+                  <option key={m.value} value={m.value}>{m.icon} {m.label}</option>
+                ))}
+              </select>
+              <span className="place-gap-time">
+                {info ? formatCompactDuration(info.minutes) : '…'}
+              </span>
+            </>
+          ) : 'Travel time unknown'}
         </div>
         <div className="place-gap-line" />
       </div>
@@ -993,12 +1127,106 @@ export default function TripPage() {
 
       <div style={{ borderTop: '2px solid var(--orange)', paddingTop: 6 }}>
         <h4>Transit</h4>
-        <PlaceSearch label="From" onPick={setFrom} near={near} placeholder="Airport, station…" />
-        <PlaceSearch label="To" onPick={setTo} near={near} placeholder="Airport, station…" />
-        <label>Mode</label><input value={mode} onChange={e => setMode(e.target.value)} />
+        <PlaceSearch label="From" onPick={r => { setFrom(r); setFlightOptions([]); setFlightStatus('idle') }} near={near} placeholder="Airport, station…" />
+        <PlaceSearch label="To" onPick={r => { setTo(r); setFlightOptions([]); setFlightStatus('idle') }} near={near} placeholder="Airport, station…" />
+        <label htmlFor="transit-mode">Mode of transportation</label>
+        <select id="transit-mode" value={mode} onChange={e => { setMode(e.target.value); setFlightOptions([]); setFlightStatus('idle') }}>
+          {TRANSIT_MODES.map(m => (
+            <option key={m.value} value={m.value}>{m.icon} {m.label}</option>
+          ))}
+        </select>
+        {isFlight(mode) && (
+          <div className="flight-lookup">
+            <button
+              type="button"
+              className="btn-secondary btn-small"
+              style={{ width: '100%', marginTop: 8 }}
+              disabled={!from || !to || flightStatus === 'loading'}
+              onClick={async () => {
+                if (!from || !to) return
+                setFlightStatus('loading')
+                setFlightMsg('')
+                try {
+                  const res = await lookupFlights({
+                    fromName: from.name,
+                    toName: to.name,
+                    from: { lat: from.lat, lng: from.lng },
+                    to: { lat: to.lat, lng: to.lng },
+                    date: (tStart || `${trip.start_date}T12:00`).slice(0, 10),
+                  })
+                  setFlightOptions(res.flights)
+                  setFlightLink(res.googleFlights || '')
+                  setFlightMsg(res.message || '')
+                  setFlightStatus(res.flights.length ? 'ready' : 'empty')
+                } catch {
+                  setFlightStatus('error')
+                  setFlightMsg('Could not look up flights.')
+                }
+              }}
+            >
+              {flightStatus === 'loading' ? 'Looking up flights…' : 'Find flights (fill times)'}
+            </button>
+            {flightLink && (
+              <a className="travel-chip" href={flightLink} target="_blank" rel="noreferrer" style={{ marginTop: 6, display: 'inline-flex' }}>
+                Open Google Flights
+              </a>
+            )}
+            {flightMsg && <p className="places-hint">{flightMsg}</p>}
+            {flightOptions.length > 0 && (
+              <div className="pick-list" style={{ marginTop: 8 }}>
+                {flightOptions.map(f => (
+                  <button
+                    key={f.id}
+                    type="button"
+                    className="pick-row"
+                    onClick={() => {
+                      setTStart(f.departure)
+                      setTEnd(f.arrival)
+                      setMode('Airplane')
+                      setFrom(prev => prev ? {
+                        ...prev,
+                        name: prev.name.includes(f.depIata) ? prev.name : `${placePrimary(prev.name) || prev.name} (${f.depIata})`,
+                      } : prev)
+                      setTo(prev => prev ? {
+                        ...prev,
+                        name: prev.name.includes(f.arrIata) ? prev.name : `${placePrimary(prev.name) || prev.name} (${f.arrIata})`,
+                      } : prev)
+                      void addTransit({
+                        start: f.departure,
+                        end: f.arrival,
+                        duration: f.durationMinutes,
+                        title: `${f.flightNumber} · ${f.depIata} → ${f.arrIata}`,
+                      })
+                    }}
+                  >
+                    <span className="pick-row-main" style={{ pointerEvents: 'none' }}>
+                      <span><b>{f.flightNumber}</b> · {f.airline}</span>
+                      <span className="pick-row-cat">
+                        {f.depIata}→{f.arrIata} · {formatTransitTime(f.durationMinutes, 'Airplane')} · tap to add
+                      </span>
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+        {/train|rail/i.test(mode) && from && to && (
+          <a
+            className="travel-chip"
+            style={{ marginTop: 8, display: 'inline-flex' }}
+            href={`https://www.google.com/maps/dir/?api=1&origin=${from.lat},${from.lng}&destination=${to.lat},${to.lng}&travelmode=transit`}
+            target="_blank"
+            rel="noreferrer"
+          >
+            Check trains on Google Maps
+          </a>
+        )}
         <label>Departure</label><input type="datetime-local" value={tStart} onChange={e => setTStart(e.target.value)} />
         <label>Arrival</label><input type="datetime-local" value={tEnd} onChange={e => setTEnd(e.target.value)} />
-        <button className="btn-orange" style={{ width: '100%', marginTop: 10 }} onClick={addTransit}>Add Transit</button>
+        <button className="btn-orange" style={{ width: '100%', marginTop: 10 }} onClick={() => addTransit()}>
+          Add Transit
+        </button>
       </div>
 
       <div style={{ borderTop: '2px solid var(--orange)', paddingTop: 6, marginTop: 14 }}>
@@ -1018,7 +1246,11 @@ export default function TripPage() {
                 <button
                   key={p.id}
                   type="button"
-                  className={`pick-row${hotel?.name === p.name ? ' selected' : ''}`}
+                  className={`pick-row${hotel?.name === p.name ? ' selected' : ''}${hotelPreview?.id === p.id ? ' previewing' : ''}`}
+                  onMouseEnter={() => setHotelPreview({ id: p.id, lat: p.lat, lng: p.lng, name: p.name })}
+                  onMouseLeave={() => setHotelPreview(null)}
+                  onFocus={() => setHotelPreview({ id: p.id, lat: p.lat, lng: p.lng, name: p.name })}
+                  onBlur={() => setHotelPreview(null)}
                   onClick={() => addHotelFromList(p)}
                 >
                   <span>🛏️ {p.name}</span>
@@ -1026,7 +1258,13 @@ export default function TripPage() {
                 </button>
               ))}
             </div>
-            <PlaceSearch label="Or search a hotel" onPick={r => { setHotel(r); setStayKind('hotel') }} near={near} placeholder="Hotel name…" />
+            <PlaceSearch
+              label="Or search a hotel"
+              onPick={r => { setHotel(r); setStayKind('hotel'); setHotelPreview(null) }}
+              onHover={r => setHotelPreview(r ? { lat: r.lat, lng: r.lng, name: r.name } : null)}
+              near={near}
+              placeholder="Hotel name…"
+            />
             {hotel && <p className="places-hint">Selected: <b>{hotel.name}</b></p>}
             <div className="travel-link-row" style={{ marginTop: 8 }}>
               <a className="travel-chip" href={`https://www.booking.com/searchresults.html?ss=${encodeURIComponent(trip.place || '')}`} target="_blank" rel="noreferrer">Booking.com</a>
@@ -1154,9 +1392,20 @@ export default function TripPage() {
             </label>
           </div>
           <p className="places-hint">
-            Drag to reorder. Click a day to show that day’s route on the map
-            {selectedDay ? <> · Viewing <b>{fmtDate(selectedDay)}</b></> : null}.
+            Drag to reorder. <b>All days</b> shows every day’s route in its own color; click a day to focus it.
+            Change walking/driving/train between stops with the dropdown on the connector.
+            {selectedDay ? <> · Viewing <b>{fmtDate(selectedDay)}</b></> : <> · Showing all days</>}.
           </p>
+          {!selectedDay && tripDays.length > 1 && (
+            <div className="day-legend" aria-label="Day colors">
+              {tripDays.map(day => (
+                <span key={day} className="day-legend-item">
+                  <span className="day-legend-swatch" style={{ background: dayColor(dayIndexOf(day)) }} />
+                  {fmtDate(day)}
+                </span>
+              ))}
+            </div>
+          )}
 
           {savedPlaceSuggestions.length > 0 && (
             <div className="saved-suggest" role="region" aria-label="Saved place suggestions">
@@ -1214,7 +1463,9 @@ export default function TripPage() {
                     className={`day-chip${selectedDay === day ? ' active' : ''}`}
                     onClick={() => selectDay(day)}
                     title={`Show route for ${fmtDate(day)}`}
+                    style={{ borderColor: dayColor(dayIndexOf(day)) }}
                   >
+                    <span className="day-chip-dot" style={{ background: dayColor(dayIndexOf(day)) }} aria-hidden />
                     {fmtDate(day)}
                     <span>{load.count}</span>
                   </button>
@@ -1363,15 +1614,20 @@ export default function TripPage() {
               ))}
             </div>
           )}
-          {selectedDay && (
+          {!selectedDay && tripDays.length > 0 && (
             <div className="day-route-banner">
+              <span>All days on the map — each day uses a different color</span>
+            </div>
+          )}
+          {selectedDay && (
+            <div className="day-route-banner" style={{ borderLeft: `4px solid ${dayColor(dayIndexOf(selectedDay))}` }}>
               <span>
                 Day route: <strong>{fmtDate(selectedDay)}</strong>
                 {mapSourceItems.length > 1
                   ? ` · ${mapSourceItems.map(i => shortAddress(i.title || i.place_name, 1) || 'Stop').join(' → ')}`
                   : ' · Add stops with locations to draw a path'}
               </span>
-              <button type="button" className="btn-secondary btn-small" onClick={() => setSelectedDay(null)}>Clear</button>
+              <button type="button" className="btn-secondary btn-small" onClick={() => setSelectedDay(null)}>All days</button>
             </div>
           )}
           <div className="trip-meta-bar">
@@ -1397,12 +1653,14 @@ export default function TripPage() {
           <MapView
             pins={pins}
             segments={segments}
-            showRoute={showDayRoute || (!selectedDay && pins.length > 1)}
+            showRoute={false}
             enableNearbyPois
             showUserLocation
             placeContext={shortAddress(trip.place) || trip.place}
             displayLanguage={profile.preferred_language || 'en'}
+            previewPin={hotelPreview}
             onSavePlace={persistSavePlace}
+            onAddToItinerary={addPlaceToItinerary}
           />
         </div>
 

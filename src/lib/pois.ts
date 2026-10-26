@@ -32,10 +32,10 @@ export interface MapPoi {
 
 /** How many pins to show at a given map zoom (popular first). */
 export function poiLimitForZoom(zoom: number): number {
-  if (zoom >= 16) return 36
-  if (zoom >= 14) return 22
-  if (zoom >= 12) return 14
-  return 8
+  if (zoom >= 16) return 28
+  if (zoom >= 14) return 16
+  if (zoom >= 12) return 10
+  return 6
 }
 
 /** Category weight — more “destination-y” types win when zoomed out. */
@@ -270,13 +270,37 @@ function escapeAttr(s: string) {
   return escapeHtml(s).replace(/'/g, '&#39;')
 }
 
+function placeActionAttrs(
+  lat: number,
+  lng: number,
+  name: string,
+  category: string,
+  pinId?: string,
+  placeName?: string,
+) {
+  if (pinId) return `data-place-pin="${escapeAttr(pinId)}"`
+  return [
+    `data-place-lat="${lat}"`,
+    `data-place-lng="${lng}"`,
+    `data-place-name="${escapeAttr(name)}"`,
+    `data-place-category="${escapeAttr(category)}"`,
+    `data-place-place="${escapeAttr(placeName || name)}"`,
+  ].join(' ')
+}
+
 function popupHtml(
   name: string,
   category: PoiCategory,
   lat: number,
   lng: number,
   placeContext: string,
-  opts?: { savable?: boolean; pinId?: string; /** Original name for save / search (when title is translated). */ saveName?: string },
+  opts?: {
+    savable?: boolean
+    itinerary?: boolean
+    pinId?: string
+    /** Original name for save / search (when title is translated). */
+    saveName?: string
+  },
 ) {
   const meta = poiMeta(category)
   const saveName = opts?.saveName || name
@@ -285,11 +309,12 @@ function popupHtml(
     .slice(0, 2)
     .map(l => `<a href="${l.url}" target="_blank" rel="noreferrer">${l.label}</a>`)
     .join(' · ')
-  const saveAttrs = opts?.pinId
-    ? `data-save-pin="${escapeAttr(opts.pinId)}"`
-    : `data-save-lat="${lat}" data-save-lng="${lng}" data-save-name="${escapeAttr(saveName)}" data-save-category="${category}"`
+  const attrs = placeActionAttrs(lat, lng, saveName, category, opts?.pinId)
   const saveBtn = opts?.savable !== false
-    ? `<button type="button" class="map-popup-btn map-save-btn" ${saveAttrs}>Add to saved list</button>`
+    ? `<button type="button" class="map-popup-btn map-save-btn" ${attrs}>Add to saved list</button>`
+    : ''
+  const itinBtn = opts?.itinerary !== false
+    ? `<button type="button" class="map-popup-btn map-itin-btn" ${attrs}>Save to itinerary</button>`
     : ''
   return [
     `<div class="map-popup">`,
@@ -299,6 +324,7 @@ function popupHtml(
     `<div class="map-popup-actions">`,
     `<a class="map-popup-link" href="${maps}" target="_blank" rel="noreferrer">Open in Google Maps</a>`,
     saveBtn,
+    itinBtn,
     `</div>`,
     `</div>`,
   ].join('')
@@ -447,6 +473,8 @@ export function buildPinPopup(opts: {
   lat: number
   lng: number
   savable?: boolean
+  /** Show “Save to itinerary” (default true when savable). */
+  itinerary?: boolean
   pinId?: string
 }) {
   const name = opts.title || opts.name || 'Place'
@@ -455,11 +483,13 @@ export function buildPinPopup(opts: {
   const category = (opts.category || 'other') as PoiCategory
   const meta = poiMeta(category)
   const maps = googleMapsUrl({ lat: opts.lat, lng: opts.lng, name })
-  const saveAttrs = opts.pinId
-    ? `data-save-pin="${escapeAttr(opts.pinId)}"`
-    : `data-save-lat="${opts.lat}" data-save-lng="${opts.lng}" data-save-name="${escapeAttr(name)}" data-save-category="${category}" data-save-place="${escapeAttr(detail || name)}"`
+  const attrs = placeActionAttrs(opts.lat, opts.lng, name, category, opts.pinId, detail || name)
   const saveBtn = opts.savable
-    ? `<button type="button" class="map-popup-btn map-save-btn" ${saveAttrs}>Add to saved list</button>`
+    ? `<button type="button" class="map-popup-btn map-save-btn" ${attrs}>Add to saved list</button>`
+    : ''
+  const showItin = opts.itinerary ?? !!opts.savable
+  const itinBtn = showItin
+    ? `<button type="button" class="map-popup-btn map-itin-btn" ${attrs}>Save to itinerary</button>`
     : ''
   return [
     `<div class="map-popup">`,
@@ -468,6 +498,7 @@ export function buildPinPopup(opts: {
     `<div class="map-popup-actions">`,
     `<a class="map-popup-link" href="${maps}" target="_blank" rel="noreferrer">Open in Google Maps</a>`,
     saveBtn,
+    itinBtn,
     `</div>`,
     `</div>`,
   ].join('')

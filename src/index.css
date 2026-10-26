@@ -1291,6 +1291,56 @@ label {
   border-radius: 999px;
   padding: 3px 10px;
 }
+.place-gap-editable {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border-radius: 10px;
+  padding: 4px 8px;
+}
+.gap-mode-select {
+  border: none;
+  background: transparent;
+  font: inherit;
+  font-weight: 600;
+  font-size: 12px;
+  color: var(--text);
+  padding: 0;
+  min-height: auto;
+  max-width: 140px;
+}
+.place-gap-time {
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+.day-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  margin: 0 0 12px;
+}
+.day-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.day-legend-swatch,
+.day-chip-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex: none;
+}
+.day-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.flight-lookup {
+  margin-top: 4px;
+}
 
 .trip-mobile-tabs {
   display: none;
@@ -1537,10 +1587,43 @@ label {
   font-family: inherit;
 }
 .map-popup-btn:hover { background: var(--orange-hover); }
+.map-popup-btn.map-itin-btn {
+  background: #fff;
+  color: var(--orange-hover);
+  border-color: #FDBA74;
+}
+.map-popup-btn.map-itin-btn:hover {
+  background: #FFF7ED;
+}
 .map-popup-btn[disabled] {
   background: #9CA3AF;
   border-color: #9CA3AF;
+  color: #fff;
   cursor: default;
+}
+.hotel-preview-pin { background: transparent !important; border: none !important; }
+.hotel-preview-body {
+  width: 40px;
+  height: 40px;
+  border-radius: 50% 50% 50% 4px;
+  background: #fff;
+  border: 3px solid var(--orange);
+  box-shadow: 0 0 0 4px rgba(249, 115, 22, 0.35), 0 4px 12px rgba(15, 23, 42, 0.3);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  transform: rotate(-45deg);
+  animation: hotel-preview-pulse 1.2s ease-in-out infinite;
+}
+.hotel-preview-body span { transform: rotate(45deg); display: block; }
+@keyframes hotel-preview-pulse {
+  0%, 100% { box-shadow: 0 0 0 4px rgba(249, 115, 22, 0.35), 0 4px 12px rgba(15, 23, 42, 0.3); }
+  50% { box-shadow: 0 0 0 8px rgba(249, 115, 22, 0.15), 0 4px 12px rgba(15, 23, 42, 0.3); }
+}
+.pick-row.previewing {
+  border-color: var(--orange);
+  background: #FFF7ED;
 }
 .leaflet-popup-content-wrapper {
   border-radius: var(--radius-md);
