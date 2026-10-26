@@ -1341,6 +1341,35 @@ label {
 .flight-lookup {
   margin-top: 4px;
 }
+.flight-shot-drop {
+  margin-top: 8px;
+  padding: 12px 14px;
+  border: 1.5px dashed var(--border);
+  border-radius: var(--radius-sm);
+  background: #FAFAF9;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+.flight-shot-drop strong {
+  font-size: 13px;
+  color: var(--text);
+}
+.flight-shot-drop span {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.flight-shot-drop:hover,
+.flight-shot-drop.dragging {
+  border-color: var(--orange);
+  background: #FFF7ED;
+}
+.flight-shot-drop.reading {
+  opacity: 0.75;
+  pointer-events: none;
+}
 
 .trip-mobile-tabs {
   display: none;

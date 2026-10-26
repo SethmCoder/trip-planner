@@ -17,8 +17,20 @@ import { destinationTravelLinks, poiTravelLinks } from '../lib/travelApps'
 import { shortAddress, placePrimary, placeSecondary, hotelStayTitle, hotelPhase } from '../lib/formatPlace'
 import { dayColor, TRANSIT_MODES, GAP_MODES } from '../lib/transportModes'
 import { lookupFlights, type FlightOption } from '../lib/flights'
+import { isImageFile, ocrFlightScreenshot, type ParsedFlightScreenshot } from '../lib/flightScreenshot'
+import type { AirportRef } from '../lib/airports'
 import DestinationThumb from '../components/DestinationThumb'
 import TranslatedText from '../components/TranslatedText'
+
+function geoFromAirport(a: AirportRef): GeoResult {
+  return {
+    name: `${a.name} (${a.iata})`,
+    display: `${a.name}, ${a.city}`,
+    detail: a.city,
+    lat: a.lat,
+    lng: a.lng,
+  }
+}
 
 const STAY_COLORS = ['#2563EB', '#7C3AED', '#0891B2', '#DB2777', '#059669', '#D97706']
 
@@ -181,6 +193,10 @@ export default function TripPage() {
   const [flightStatus, setFlightStatus] = useState<'idle' | 'loading' | 'ready' | 'empty' | 'error'>('idle')
   const [flightMsg, setFlightMsg] = useState('')
   const [flightLink, setFlightLink] = useState('')
+  const [shotStatus, setShotStatus] = useState<'idle' | 'reading' | 'done' | 'error'>('idle')
+  const [shotMsg, setShotMsg] = useState('')
+  const [shotDragging, setShotDragging] = useState(false)
+  const shotInputRef = useRef<HTMLInputElement>(null)
   const [gapModes, setGapModes] = useState<Record<string, string>>({})
   const [hotel, setHotel] = useState<GeoResult | null>(null)
   const [hIn, setHIn] = useState('')
@@ -508,6 +524,45 @@ export default function TripPage() {
     await api.saveItems(all.filter(x => x.id === it.id || x.group_id === it.group_id))
   }
   const remove = async (it: ItineraryItem) => { setItems(items.filter(x => x.id !== it.id)); await api.deleteItem(it.id) }
+  const applyFlightScreenshot = (parsed: ParsedFlightScreenshot) => {
+    setMode('Airplane')
+    setFlightOptions([])
+    setFlightStatus('idle')
+    if (parsed.depAirport) setFrom(geoFromAirport(parsed.depAirport))
+    if (parsed.arrAirport) setTo(geoFromAirport(parsed.arrAirport))
+    if (parsed.departure) setTStart(parsed.departure)
+    if (parsed.arrival) setTEnd(parsed.arrival)
+    const bits: string[] = []
+    if (parsed.depIata && parsed.arrIata) bits.push(`${parsed.depIata} → ${parsed.arrIata}`)
+    if (parsed.departure) bits.push(`dep ${parsed.departure.replace('T', ' ')}`)
+    if (parsed.arrival) bits.push(`arr ${parsed.arrival.replace('T', ' ')}`)
+    if (parsed.durationMinutes != null) bits.push(`${formatTransitTime(parsed.durationMinutes, 'Airplane')} block`)
+    if (parsed.confidence < 0.5) {
+      setShotMsg('Could only read part of the screenshot — check From/To and times.')
+    } else {
+      setShotMsg(bits.length ? `Filled from screenshot: ${bits.join(' · ')}` : 'Screenshot read, but no flight fields matched.')
+    }
+  }
+
+  const ingestFlightScreenshot = async (file: File) => {
+    if (!isImageFile(file)) {
+      setShotStatus('error')
+      setShotMsg('Drop a PNG or JPEG screenshot of a flight card.')
+      return
+    }
+    setShotStatus('reading')
+    setShotMsg('Reading screenshot…')
+    try {
+      const year = Number((tStart || trip.start_date || '').slice(0, 4)) || new Date().getFullYear()
+      const parsed = await ocrFlightScreenshot(file, year)
+      applyFlightScreenshot(parsed)
+      setShotStatus(parsed.confidence >= 0.5 ? 'done' : 'error')
+    } catch {
+      setShotStatus('error')
+      setShotMsg('Could not read that image — try a clearer crop of the flight card.')
+    }
+  }
+
   const addTransit = async (override?: { start?: string; end?: string; title?: string; duration?: number }) => {
     if (!from || !to) return alert('Pick both From and To places')
     const start = override?.start || tStart
@@ -1137,6 +1192,46 @@ export default function TripPage() {
         </select>
         {isFlight(mode) && (
           <div className="flight-lookup">
+            <div
+              className={`flight-shot-drop${shotDragging ? ' dragging' : ''}${shotStatus === 'reading' ? ' reading' : ''}`}
+              onDragEnter={e => { e.preventDefault(); e.stopPropagation(); setShotDragging(true) }}
+              onDragOver={e => { e.preventDefault(); e.stopPropagation(); setShotDragging(true) }}
+              onDragLeave={e => { e.preventDefault(); e.stopPropagation(); setShotDragging(false) }}
+              onDrop={e => {
+                e.preventDefault()
+                e.stopPropagation()
+                setShotDragging(false)
+                const file = e.dataTransfer.files?.[0]
+                if (file) void ingestFlightScreenshot(file)
+              }}
+              onPaste={e => {
+                const item = [...(e.clipboardData?.items || [])].find(i => i.type.startsWith('image/'))
+                const file = item?.getAsFile()
+                if (file) {
+                  e.preventDefault()
+                  void ingestFlightScreenshot(file)
+                }
+              }}
+              role="button"
+              tabIndex={0}
+              onClick={() => shotInputRef.current?.click()}
+              onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') shotInputRef.current?.click() }}
+            >
+              <input
+                ref={shotInputRef}
+                type="file"
+                accept="image/*"
+                hidden
+                onChange={e => {
+                  const file = e.target.files?.[0]
+                  e.target.value = ''
+                  if (file) void ingestFlightScreenshot(file)
+                }}
+              />
+              <strong>{shotStatus === 'reading' ? 'Reading screenshot…' : 'Drop flight screenshot'}</strong>
+              <span>Cirium / FlightAware-style cards · fills airports &amp; times</span>
+            </div>
+            {shotMsg && <p className="places-hint">{shotMsg}</p>}
             <button
               type="button"
               className="btn-secondary btn-small"
@@ -1157,14 +1252,32 @@ export default function TripPage() {
                   setFlightOptions(res.flights)
                   setFlightLink(res.googleFlights || '')
                   setFlightMsg(res.message || '')
-                  setFlightStatus(res.flights.length ? 'ready' : 'empty')
+                  // Always apply estimate times when there are no live rows
+                  const fill = res.live && res.flights[0] ? null : res.estimate
+                  if (fill) {
+                    setTStart(fill.departure)
+                    setTEnd(fill.arrival)
+                    if (res.dep) {
+                      setFrom(prev => prev ? {
+                        ...prev,
+                        name: prev.name.includes(res.dep!.iata) ? prev.name : `${placePrimary(prev.name) || prev.name} (${res.dep!.iata})`,
+                      } : prev)
+                    }
+                    if (res.arr) {
+                      setTo(prev => prev ? {
+                        ...prev,
+                        name: prev.name.includes(res.arr!.iata) ? prev.name : `${placePrimary(prev.name) || prev.name} (${res.arr!.iata})`,
+                      } : prev)
+                    }
+                  }
+                  setFlightStatus(res.flights.length ? 'ready' : res.estimate ? 'ready' : 'empty')
                 } catch {
                   setFlightStatus('error')
                   setFlightMsg('Could not look up flights.')
                 }
               }}
             >
-              {flightStatus === 'loading' ? 'Looking up flights…' : 'Find flights (fill times)'}
+              {flightStatus === 'loading' ? 'Looking up…' : 'Estimate time / find flights'}
             </button>
             {flightLink && (
               <a className="travel-chip" href={flightLink} target="_blank" rel="noreferrer" style={{ marginTop: 6, display: 'inline-flex' }}>
