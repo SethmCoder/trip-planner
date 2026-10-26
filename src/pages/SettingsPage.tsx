@@ -213,10 +213,15 @@ export default function SettingsPage() {
               <p className="places-hint" style={{ marginTop: 0 }}>
                 Preferred apps for finishing award bookings (deep links from the Flights page).
               </p>
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>
+              <div className="booking-app-checks">
                 {BOOKING_APPS.map(app => (
-                  <label key={app.id} className="places-toggle" style={{ gap: 8 }}>
-                    <input type="checkbox" checked={bookingApps.includes(app.id)} onChange={() => toggleApp(app.id)} />
+                  <label key={app.id} className="checkbox-square-label">
+                    <input
+                      type="checkbox"
+                      className="checkbox-square"
+                      checked={bookingApps.includes(app.id)}
+                      onChange={() => toggleApp(app.id)}
+                    />
                     <span>{app.label}</span>
                   </label>
                 ))}

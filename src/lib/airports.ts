@@ -47,6 +47,41 @@ export function airportCount(): number {
   return AIRPORTS.length
 }
 
+/** Typeahead search by IATA, city, or airport name. Best matches first. */
+export function searchAirports(query: string, limit = 12): AirportRef[] {
+  const q = query.trim().toLowerCase()
+  if (!q) {
+    return AIRPORTS
+      .filter(a => a.size === 'large')
+      .slice(0, limit)
+  }
+  const scored: { a: AirportRef; score: number }[] = []
+  for (const a of AIRPORTS) {
+    const iata = a.iata.toLowerCase()
+    const city = (a.city || '').toLowerCase()
+    const name = (a.name || '').toLowerCase()
+    let score = 0
+    if (iata === q) score = 1000
+    else if (iata.startsWith(q)) score = 800
+    else if (city === q) score = 700
+    else if (city.startsWith(q)) score = 600
+    else if (name.startsWith(q)) score = 500
+    else if (city.includes(q)) score = 400
+    else if (name.includes(q)) score = 300
+    else if (iata.includes(q)) score = 200
+    else continue
+    score += (SIZE_SCORE[a.size || ''] || 0) * 10
+    scored.push({ a, score })
+  }
+  scored.sort((x, y) => y.score - x.score)
+  return scored.slice(0, limit).map(s => s.a)
+}
+
+export function formatAirportOption(a: AirportRef): string {
+  const where = a.city && a.city !== a.name ? `${a.city} — ${a.name}` : a.name
+  return `${a.iata} · ${where}`
+}
+
 /** Prefer larger airports when several match the same city/name text. */
 function bestScored(candidates: AirportRef[]): AirportRef | null {
   if (!candidates.length) return null

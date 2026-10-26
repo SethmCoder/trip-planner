@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import TopBar from '../components/TopBar'
+import SearchableCombobox, { type ComboboxOption } from '../components/SearchableCombobox'
 import { useAuth } from '../context/AuthContext'
 import {
   BOOKING_APPS,
@@ -12,6 +13,8 @@ import {
   deleteAwardSearch,
   seatsAeroUrl,
 } from '../lib/awards'
+import { airportByIata, formatAirportOption, searchAirports } from '../lib/airports'
+import { AIRLINES, formatAirlineOption, searchAirlines } from '../lib/airlines'
 import type { AwardSearch } from '../lib/types'
 
 export default function FlightsPage() {
@@ -22,6 +25,9 @@ export default function FlightsPage() {
   const [msg, setMsg] = useState('')
   const [err, setErr] = useState('')
   const [saving, setSaving] = useState(false)
+  const [originQ, setOriginQ] = useState('')
+  const [destQ, setDestQ] = useState('')
+  const [airlineQ, setAirlineQ] = useState('')
 
   const reload = async () => {
     if (!profile) return
@@ -36,11 +42,53 @@ export default function FlightsPage() {
     return () => window.clearInterval(t)
   }, [profile?.id])
 
+  const originOpts: ComboboxOption[] = useMemo(
+    () => searchAirports(originQ).map(a => ({
+      value: a.iata,
+      label: formatAirportOption(a),
+      sublabel: a.size ? `${a.size} hub` : undefined,
+    })),
+    [originQ],
+  )
+  const destOpts: ComboboxOption[] = useMemo(
+    () => searchAirports(destQ).map(a => ({
+      value: a.iata,
+      label: formatAirportOption(a),
+      sublabel: a.size ? `${a.size} hub` : undefined,
+    })),
+    [destQ],
+  )
+  const airlineOpts: ComboboxOption[] = useMemo(
+    () => searchAirlines(airlineQ, 30).map(a => ({
+      value: a.id === 'any' ? '' : (a.iata || a.name),
+      label: formatAirlineOption(a),
+    })),
+    [airlineQ],
+  )
+
   if (!profile || !form) return null
 
   const set = <K extends keyof AwardSearch>(key: K, value: AwardSearch[K]) => {
     setForm(prev => (prev ? { ...prev, [key]: value } : prev))
   }
+
+  const originDisplay = (() => {
+    const a = airportByIata(form.origin)
+    return a ? formatAirportOption(a) : form.origin
+  })()
+  const destDisplay = (() => {
+    const a = airportByIata(form.destination)
+    return a ? formatAirportOption(a) : form.destination
+  })()
+  const airlineDisplay = (() => {
+    if (!form.preferred_airline) return 'Any airline'
+    const hit = AIRLINES.find(a =>
+      a.iata === form.preferred_airline
+      || a.name === form.preferred_airline
+      || a.id === form.preferred_airline,
+    )
+    return hit ? formatAirlineOption(hit) : form.preferred_airline
+  })()
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -121,10 +169,28 @@ export default function FlightsPage() {
             then notifies you so you can book in your chosen app.
           </p>
           <form onSubmit={submit} className="flights-form">
-            <label>Origin</label>
-            <input value={form.origin} onChange={e => set('origin', e.target.value)} placeholder="SFO" required />
-            <label>Destination</label>
-            <input value={form.destination} onChange={e => set('destination', e.target.value)} placeholder="NRT" required />
+            <SearchableCombobox
+              label="Origin"
+              value={form.origin}
+              displayValue={originDisplay}
+              placeholder="City or code (SFO, Tokyo…)"
+              options={originOpts}
+              onQueryChange={setOriginQ}
+              onSelect={opt => set('origin', opt.value)}
+              required
+              emptyMessage="No airports match"
+            />
+            <SearchableCombobox
+              label="Destination"
+              value={form.destination}
+              displayValue={destDisplay}
+              placeholder="City or code (NRT, Seoul…)"
+              options={destOpts}
+              onQueryChange={setDestQ}
+              onSelect={opt => set('destination', opt.value)}
+              required
+              emptyMessage="No airports match"
+            />
             <div className="flights-row">
               <div>
                 <label>Date from</label>
@@ -153,8 +219,16 @@ export default function FlightsPage() {
                 <input type="number" min={0} value={form.points_max} onChange={e => set('points_max', Number(e.target.value))} />
               </div>
             </div>
-            <label>Preferred airline</label>
-            <input value={form.preferred_airline} onChange={e => set('preferred_airline', e.target.value)} placeholder="Any" />
+            <SearchableCombobox
+              label="Preferred airline"
+              value={form.preferred_airline}
+              displayValue={airlineDisplay}
+              placeholder="Search airlines…"
+              options={airlineOpts}
+              onQueryChange={setAirlineQ}
+              onSelect={opt => set('preferred_airline', opt.value)}
+              emptyMessage="No airlines match"
+            />
             <div className="flights-row">
               <div>
                 <label>Cabin</label>

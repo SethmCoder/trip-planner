@@ -422,16 +422,30 @@ label {
   100% { transform: scale(1.6); opacity: 0; }
 }
 
-/* Toggle */
-.toggle { position: relative; width: 48px; height: 26px; flex: none; }
-.toggle input { opacity: 0; width: 0; height: 0; }
+/* Toggle — thumb centered on the track */
+.toggle {
+  position: relative;
+  width: 48px;
+  height: 26px;
+  flex: none;
+  display: inline-block;
+  vertical-align: middle;
+}
+.toggle input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+  position: absolute;
+  margin: 0;
+}
 .slider {
   position: absolute;
   inset: 0;
   background: #ccc;
   border: 1px solid var(--border);
   border-radius: 999px;
-  transition: 0.2s;
+  transition: background 0.2s;
+  box-sizing: border-box;
 }
 .slider:before {
   content: "";
@@ -439,14 +453,70 @@ label {
   width: 18px;
   height: 18px;
   left: 3px;
-  top: 3px;
+  top: 50%;
+  transform: translateY(-50%);
   background: var(--white);
   border: 1px solid var(--border);
   border-radius: 50%;
-  transition: 0.2s;
+  transition: transform 0.2s;
+  box-sizing: border-box;
 }
 .toggle input:checked + .slider { background: var(--orange); }
-.toggle input:checked + .slider:before { transform: translateX(22px); }
+.toggle input:checked + .slider:before {
+  transform: translate(22px, -50%);
+}
+
+/* Small grey square checkboxes (booking apps, etc.) */
+.booking-app-checks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 16px;
+}
+.checkbox-square-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text);
+  cursor: pointer;
+}
+.checkbox-square {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 16px !important;
+  height: 16px !important;
+  min-height: 16px !important;
+  margin: 0;
+  flex: none;
+  border: 1.5px solid #9CA3AF;
+  border-radius: 3px;
+  background: #F3F4F6;
+  cursor: pointer;
+  position: relative;
+  padding: 0;
+  box-shadow: none;
+}
+.checkbox-square:checked {
+  background: #E5E7EB;
+  border-color: #6B7280;
+}
+.checkbox-square:checked::after {
+  content: "";
+  position: absolute;
+  left: 4px;
+  top: 1px;
+  width: 5px;
+  height: 9px;
+  border: solid #374151;
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+}
+.checkbox-square:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
 
 /* Main layout */
 .app-shell {
@@ -2103,6 +2173,49 @@ label {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 10px;
+}
+
+.combobox { position: relative; }
+.combobox-list {
+  position: absolute;
+  z-index: 40;
+  left: 0;
+  right: 0;
+  top: calc(100% + 4px);
+  margin: 0;
+  padding: 4px 0;
+  list-style: none;
+  max-height: 240px;
+  overflow: auto;
+  background: var(--white);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-md);
+}
+.combobox-list button {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  width: 100%;
+  border: none;
+  background: transparent;
+  text-align: left;
+  padding: 10px 12px;
+  font-size: 14px;
+  color: var(--text);
+  border-radius: 0;
+}
+.combobox-list button:hover,
+.combobox-list button.selected {
+  background: var(--orange-50);
+}
+.combobox-label { font-weight: 600; }
+.combobox-sub { font-size: 12px; color: var(--text-secondary); }
+.combobox-empty {
+  padding: 10px 12px;
+  font-size: 13px;
+  color: var(--text-secondary);
 }
 .award-search-list {
   list-style: none;
