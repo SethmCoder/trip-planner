@@ -23,10 +23,11 @@ import DestinationThumb from '../components/DestinationThumb'
 import TranslatedText from '../components/TranslatedText'
 
 function geoFromAirport(a: AirportRef): GeoResult {
+  const label = `${a.city || a.name} (${a.iata})`
   return {
-    name: `${a.name} (${a.iata})`,
+    name: label,
     display: `${a.name}, ${a.city}`,
-    detail: a.city,
+    detail: a.name,
     lat: a.lat,
     lng: a.lng,
   }
@@ -1202,6 +1203,7 @@ export default function TripPage() {
       <div style={{ borderTop: '2px solid var(--orange)', paddingTop: 6 }}>
         <h4>Transit</h4>
         <PlaceSearch
+          key={`from-${from?.name ?? 'empty'}-${from?.lat ?? 0}`}
           label="From"
           value={from}
           onPick={r => { setFrom(r); setFlightOptions([]); setFlightStatus('idle') }}
@@ -1209,6 +1211,7 @@ export default function TripPage() {
           placeholder="Airport, station…"
         />
         <PlaceSearch
+          key={`to-${to?.name ?? 'empty'}-${to?.lat ?? 0}`}
           label="To"
           value={to}
           onPick={r => { setTo(r); setFlightOptions([]); setFlightStatus('idle') }}

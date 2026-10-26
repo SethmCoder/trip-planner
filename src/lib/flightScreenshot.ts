@@ -1,5 +1,5 @@
 /**
- * Parse flight-status screenshots (Cirium / FlightAware-style cards) via
+ * Parse flight-status screenshots (OAG / Cirium / FlightAware-style cards) via
  * client-side OCR (Tesseract) — no API key.
  */
 
@@ -42,8 +42,46 @@ const IATA_BLOCKLIST = new Set([
   'SAY', 'SHE', 'TOO', 'USE', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN',
   'OCT', 'NOV', 'DEC', 'JAN', 'FEB', 'MAR', 'APR', 'JUN', 'JUL', 'AUG', 'SEP',
   'PM', 'AM', 'UTC', 'GMT', 'EST', 'PST', 'CST', 'MST', 'EDT', 'PDT', 'AGO',
-  'GATE', 'TERM', 'SRC', 'APP', 'IOS', 'API', 'PDF', 'PNG', 'JPG',
+  'GATE', 'TERM', 'SRC', 'APP', 'IOS', 'API', 'PDF', 'PNG', 'JPG', 'OAG',
+  'INFO', 'AIR', // fragments of "Airport info"
 ])
+
+/** City / label hints that map to a preferred hub IATA. */
+const CITY_HINTS: { re: RegExp; iata: string }[] = [
+  { re: /\bseattle\b/i, iata: 'SEA' },
+  { re: /\btacoma\b/i, iata: 'SEA' },
+  { re: /\btokyo\b/i, iata: 'HND' },
+  { re: /\bhaneda\b/i, iata: 'HND' },
+  { re: /\bnarita\b/i, iata: 'NRT' },
+  { re: /\bincheon\b/i, iata: 'ICN' },
+  { re: /\bseoul\b/i, iata: 'ICN' },
+  { re: /\blos angeles\b/i, iata: 'LAX' },
+  { re: /\bsan francisco\b/i, iata: 'SFO' },
+  { re: /\bnew york\b/i, iata: 'JFK' },
+  { re: /\blondon\b/i, iata: 'LHR' },
+  { re: /\bparis\b/i, iata: 'CDG' },
+  { re: /\bamsterdam\b/i, iata: 'AMS' },
+  { re: /\bvancouver\b/i, iata: 'YVR' },
+  { re: /\bhonolulu\b/i, iata: 'HNL' },
+  { re: /\bportland\b/i, iata: 'PDX' },
+]
+
+/** Common OCR misreads of major airport codes. */
+const OCR_IATA_FIX: Record<string, string> = {
+  UIN: 'SEA', // S→U, E→I on dark cards
+  SE4: 'SEA',
+  SFA: 'SEA',
+  HNO: 'HND',
+  HNDD: 'HND',
+  TMC: 'HND', // H→T, N→M, D→C on some invert passes
+  HMC: 'HND',
+  ICN: 'ICN',
+  '1CN': 'ICN',
+  LHR: 'LHR',
+  LH8: 'LHR',
+}
+
+const SIZE_SCORE: Record<string, number> = { large: 3, medium: 1, small: 0 }
 
 function pad(n: number) {
   return String(n).padStart(2, '0')
@@ -58,15 +96,16 @@ function parseClock(raw: string): { hour: number; minute: number } | null {
   if (!m) return null
   let hour = parseInt(m[1], 10)
   const minute = parseInt(m[2], 10)
+  if (minute > 59) return null // reject OCR junk like 3:65
   const ap = (m[3] || '').replace(/\./g, '').toUpperCase()
   if (ap === 'PM' && hour < 12) hour += 12
   if (ap === 'AM' && hour === 12) hour = 0
-  if (hour > 23 || minute > 59) return null
+  if (!ap && hour > 23) return null
+  if (hour > 23) return null
   return { hour, minute }
 }
 
 function parseMonthDay(raw: string, fallbackYear: number): { year: number; month: number; day: number } | null {
-  // "Mon, Oct 26" / "Oct 26" / "October 26, 2026"
   const withYear = raw.match(/\b([A-Za-z]{3,9})\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?\s*(\d{4})?\b/)
   if (!withYear) return null
   const month = MONTHS[withYear[1].toLowerCase()]
@@ -84,46 +123,89 @@ function parseDurationMinutes(text: string): number | null {
   return parseInt(m[1], 10) * 60 + parseInt(m[2], 10)
 }
 
+function normalizeCode(raw: string): string {
+  const up = raw.toUpperCase().replace(/[^A-Z0-9]/g, '')
+  if (OCR_IATA_FIX[up] && airportByIata(OCR_IATA_FIX[up])) return OCR_IATA_FIX[up]
+  return up
+}
+
+function scoreAirport(code: string): number {
+  const a = airportByIata(code)
+  if (!a) return -1
+  return SIZE_SCORE[a.size || ''] || 0
+}
+
+function citiesFromText(text: string): string[] {
+  const hits: string[] = []
+  for (const h of CITY_HINTS) {
+    if (h.re.test(text) && !hits.includes(h.iata)) hits.push(h.iata)
+  }
+  return hits
+}
+
 function extractIataPair(text: string): { dep: string; arr: string } | null {
-  const upper = text.toUpperCase().replace(/[^A-Z0-9\s]/g, ' ')
+  const upper = text.toUpperCase()
+
+  // Strongest: "SEA » HND" / "SEA → HND" / "SEA - HND" on the route header
+  const arrow = upper.match(/\b([A-Z0-9]{3})\s*(?:»|›|>|→|->|—|–|-|TO|➔)\s*([A-Z0-9]{3})\b/)
+  if (arrow) {
+    const dep = normalizeCode(arrow[1])
+    const arr = normalizeCode(arrow[2])
+    if (airportByIata(dep) && airportByIata(arr) && dep !== arr) return { dep, arr }
+  }
+
+  // City labels on the card (Seattle … Tokyo) — very reliable for Google/OAG cards
+  const cityPair = citiesFromText(text)
+  if (cityPair.length >= 2) return { dep: cityPair[0], arr: cityPair[1] }
+
+  // Collect candidate IATA codes, prefer large hubs
   const codes: string[] = []
-  const re = /\b([A-Z]{3})\b/g
+  const re = /\b([A-Z0-9]{3})\b/g
   let match: RegExpExecArray | null
   while ((match = re.exec(upper))) {
-    const c = match[1]
+    const c = normalizeCode(match[1])
     if (IATA_BLOCKLIST.has(c)) continue
-    if (airportByIata(c)) codes.push(c)
+    if (!airportByIata(c)) continue
+    if (!codes.includes(c)) codes.push(c)
   }
-  // Prefer first two distinct known airports in reading order (dep then arr on card)
-  const uniq: string[] = []
-  for (const c of codes) {
-    if (!uniq.includes(c)) uniq.push(c)
-    if (uniq.length >= 2) break
-  }
-  if (uniq.length >= 2) return { dep: uniq[0], arr: uniq[1] }
 
-  // Explicit "SEA HND" / "SEA → HND" style after normalizing OCR noise
-  const arrow = text.toUpperCase().match(/\b([A-Z]{3})\s*(?:→|->|—|-|TO|➔)\s*([A-Z]{3})\b/)
-  if (arrow && !IATA_BLOCKLIST.has(arrow[1]) && !IATA_BLOCKLIST.has(arrow[2])) {
-    return { dep: arrow[1], arr: arrow[2] }
+  if (codes.length >= 2) {
+    // Prefer two large airports when present
+    const large = codes.filter(c => scoreAirport(c) >= 3)
+    if (large.length >= 2) return { dep: large[0], arr: large[1] }
+    // Otherwise highest-scored pair in order
+    const ranked = [...codes].sort((a, b) => scoreAirport(b) - scoreAirport(a))
+    if (scoreAirport(ranked[0]) >= 3 && scoreAirport(ranked[1]) >= 1) {
+      // Keep reading order for dep/arr when both are decent
+      const first = codes.find(c => scoreAirport(c) >= 1)
+      const second = codes.find(c => c !== first && scoreAirport(c) >= 1)
+      if (first && second) return { dep: first, arr: second }
+    }
+    return { dep: codes[0], arr: codes[1] }
   }
+
+  if (cityPair.length === 1 && codes.length >= 1) {
+    const other = codes.find(c => c !== cityPair[0])
+    if (other) return { dep: cityPair[0], arr: other }
+  }
+
   return null
 }
 
 function extractTimes(text: string): string[] {
   const times: string[] = []
-  const re = /\b(\d{1,2}:\d{2}\s*(?:AM|PM|A\.M\.|P\.M\.)?)\b/gi
+  // Allow "12:15PM" with no space (common in OCR)
+  const re = /\b(\d{1,2}:\d{2})\s*(AM|PM|A\.M\.|P\.M\.)?\b/gi
   let m: RegExpExecArray | null
   while ((m = re.exec(text))) {
-    // Skip duration-like leftovers; keep clock times
-    if (parseClock(m[1])) times.push(m[1].replace(/\s+/g, ' ').trim())
+    const stamp = `${m[1]}${m[2] ? ` ${m[2]}` : ''}`
+    if (parseClock(stamp)) times.push(stamp.replace(/\s+/g, ' ').trim())
   }
   return times
 }
 
 function extractDates(text: string, year: number): { year: number; month: number; day: number }[] {
   const dates: { year: number; month: number; day: number }[] = []
-  // "Mon, Oct 26" or "Seattle · Mon, Oct 26"
   const re = /(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)[a-z]*,?\s+([A-Za-z]{3,9}\.?\s+\d{1,2}(?:st|nd|rd|th)?(?:,?\s*\d{4})?)/gi
   let m: RegExpExecArray | null
   while ((m = re.exec(text))) {
@@ -157,7 +239,6 @@ export function parseFlightScreenshotText(text: string, yearFallback = new Date(
   let departure: string | null = null
   let arrival: string | null = null
 
-  // Prefer first two distinct clock times (dep left, arr right on Cirium cards)
   const clocks = times.map(parseClock).filter(Boolean) as { hour: number; minute: number }[]
 
   if (dates[0] && clocks[0]) {
@@ -194,24 +275,41 @@ export function parseFlightScreenshotText(text: string, yearFallback = new Date(
   }
 }
 
-/** Boost contrast / invert dark UI cards so Tesseract reads green/white text better. */
-async function preprocessForOcr(file: Blob): Promise<HTMLCanvasElement> {
+function scoreParse(p: ParsedFlightScreenshot): number {
+  let s = p.confidence * 10
+  if (p.depAirport) s += SIZE_SCORE[p.depAirport.size || ''] || 0
+  if (p.arrAirport) s += SIZE_SCORE[p.arrAirport.size || ''] || 0
+  if (p.depIata && p.arrIata && p.depIata !== p.arrIata) s += 2
+  // Penalize tiny airports when duration looks long-haul
+  if (p.durationMinutes != null && p.durationMinutes >= 360) {
+    if (p.depAirport?.size === 'small') s -= 3
+    if (p.arrAirport?.size === 'small') s -= 3
+  }
+  return s
+}
+
+/** Optional light grayscale — no invert (invert was misreading SEA→UIN, HND→TMC). */
+async function toCanvas(file: Blob, mode: 'raw' | 'gray'): Promise<HTMLCanvasElement> {
   const bitmap = await createImageBitmap(file)
   const canvas = document.createElement('canvas')
-  canvas.width = bitmap.width
-  canvas.height = bitmap.height
+  // Upscale small screenshots for sharper glyphs
+  const scale = Math.max(1, Math.min(2, 1200 / Math.max(bitmap.width, 1)))
+  canvas.width = Math.round(bitmap.width * scale)
+  canvas.height = Math.round(bitmap.height * scale)
   const ctx = canvas.getContext('2d')!
-  ctx.drawImage(bitmap, 0, 0)
-  const img = ctx.getImageData(0, 0, canvas.width, canvas.height)
-  const d = img.data
-  for (let i = 0; i < d.length; i += 4) {
-    // Luma, then invert dark backgrounds and stretch contrast
-    let y = 0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2]
-    y = 255 - y
-    y = y < 90 ? 0 : y > 160 ? 255 : (y - 90) * (255 / 70)
-    d[i] = d[i + 1] = d[i + 2] = y
+  ctx.imageSmoothingEnabled = true
+  ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height)
+  if (mode === 'gray') {
+    const img = ctx.getImageData(0, 0, canvas.width, canvas.height)
+    const d = img.data
+    for (let i = 0; i < d.length; i += 4) {
+      const y = 0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2]
+      // Mild contrast stretch only — keep dark-on-light / light-on-dark readable
+      const v = y < 40 ? 0 : y > 220 ? 255 : y
+      d[i] = d[i + 1] = d[i + 2] = v
+    }
+    ctx.putImageData(img, 0, 0)
   }
-  ctx.putImageData(img, 0, 0)
   bitmap.close()
   return canvas
 }
@@ -231,10 +329,26 @@ export async function ocrFlightScreenshot(
   file: Blob,
   yearFallback = new Date().getFullYear(),
 ): Promise<ParsedFlightScreenshot> {
-  const canvas = await preprocessForOcr(file)
   const worker = await getWorker()
-  const { data } = await worker.recognize(canvas)
-  return parseFlightScreenshotText(data.text || '', yearFallback)
+  // Try original first (best for OAG/Cirium dark cards), then mild grayscale
+  const attempts: ParsedFlightScreenshot[] = []
+  for (const mode of ['raw', 'gray'] as const) {
+    try {
+      const canvas = await toCanvas(file, mode)
+      const { data } = await worker.recognize(canvas)
+      attempts.push(parseFlightScreenshotText(data.text || '', yearFallback))
+    } catch {
+      /* try next */
+    }
+  }
+  if (!attempts.length) {
+    return {
+      depIata: null, arrIata: null, depAirport: null, arrAirport: null,
+      departure: null, arrival: null, durationMinutes: null, rawText: '', confidence: 0,
+    }
+  }
+  attempts.sort((a, b) => scoreParse(b) - scoreParse(a))
+  return attempts[0]
 }
 
 /** Quick check for image drag/drop. */
