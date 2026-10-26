@@ -7,21 +7,9 @@ import { BOOKING_APPS } from '../lib/awards'
 import { isGoogleMapsEnabled } from '../lib/googleConfig'
 import { LANGUAGE_OPTIONS, type DisplayLanguage, type SettingsMode } from '../lib/types'
 import { requestBrowserNotifyPermission } from '../lib/notifications'
+import { TRAVEL_AVATAR_PRESETS } from '../lib/travelAvatars'
 
-/** DiceBear Adventurer faces with travel-themed seeds + sky/sand backgrounds. */
-const PRESETS = [
-  { e: '✈️', seed: 'PilotSkyways', bg: 'b6e3f4' },
-  { e: '🧳', seed: 'BackpackerNomad', bg: 'c0aede' },
-  { e: '🗺️', seed: 'GlobeTrotterMap', bg: 'd1f4d1' },
-  { e: '🌍', seed: 'WorldWanderer', bg: 'ffd5dc' },
-  { e: '🏖️', seed: 'BeachHopperSun', bg: 'ffdfbf' },
-  { e: '⛰️', seed: 'MountainHikerPeak', bg: 'c9e4de' },
-  { e: '🚆', seed: 'TrainHopperRail', bg: 'fce1a8' },
-  { e: '📸', seed: 'TravelPhotogLens', bg: 'a0c4ff' },
-].map(p => ({
-  e: p.e,
-  url: `https://api.dicebear.com/9.x/adventurer/svg?seed=${encodeURIComponent(p.seed)}&backgroundColor=${p.bg}`,
-}))
+const PRESETS = TRAVEL_AVATAR_PRESETS
 
 export default function SettingsPage() {
   const { profile, setProfile } = useAuth()
@@ -284,19 +272,22 @@ export default function SettingsPage() {
                 </div>
               </div>
               <label>Travel avatars</label>
+              <p className="places-hint" style={{ marginTop: 0 }}>
+                Plane, luggage, map, globe, beach, mountain, train, camera — not cartoon faces.
+              </p>
               <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
                 {PRESETS.map(p => (
                   <button
-                    key={p.url}
+                    key={p.label}
                     type="button"
-                    title={p.e}
+                    title={p.label}
                     onClick={async () => {
                       setProfile(await api.updateProfile(profile, { avatar_url: p.url }))
                       flash('Avatar updated.')
                     }}
                     style={{ border: profile.avatar_url === p.url ? '3px solid var(--orange)' : '1px solid var(--border)', borderRadius: '50%', padding: 2, background: '#fff' }}
                   >
-                    <img src={p.url} alt="" style={{ width: 52, height: 52, borderRadius: '50%' }} />
+                    <img src={p.url} alt={p.label} style={{ width: 52, height: 52, borderRadius: '50%', display: 'block' }} />
                   </button>
                 ))}
               </div>
