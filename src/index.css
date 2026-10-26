@@ -2139,6 +2139,64 @@ label {
 }
 .ai-suggest-card p { margin: 4px 0 8px; font-size: 13px; color: var(--text-secondary); }
 
+.award-ai-result {
+  margin-top: 10px;
+  padding: 12px;
+  background: var(--orange-50);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+.award-ai-label {
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--orange-hover);
+}
+
+.place-lists-panel {
+  margin-bottom: 14px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--divider);
+}
+.place-lists-panel h3 {
+  margin: 0 0 8px;
+  font-size: 14px;
+  color: var(--slate-800);
+}
+.place-list-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.place-list-chips .chip {
+  border: 1px solid var(--border);
+  background: var(--white);
+  color: var(--text-secondary);
+  border-radius: 999px;
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 600;
+}
+.place-list-chips .chip.active {
+  background: var(--orange);
+  border-color: var(--orange);
+  color: #fff;
+}
+.saved-card.dimmed { opacity: 0.55; }
+.saved-card-hit {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  width: 100%;
+  border: none;
+  background: transparent;
+  text-align: left;
+  padding: 0;
+  color: inherit;
+  cursor: pointer;
+}
+
 @media (max-width: 800px) {
   .flights-layout { flex-direction: column; }
   .flights-search-panel {

@@ -41,6 +41,8 @@ export function emptyAwardSearch(userId: string): AwardSearch {
     cabin: 'economy',
     seats: 1,
     booking_app: 'roame',
+    account_label: '',
+    seats_fallback: false,
     active: true,
     notify: true,
     best_summary: null,
@@ -49,6 +51,15 @@ export function emptyAwardSearch(userId: string): AwardSearch {
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
   }
+}
+
+/** Apps we can deep-link into for booking handoff. */
+export function bookingAppHasHandoff(appId: string): boolean {
+  return BOOKING_APPS.some(a => a.id === appId)
+}
+
+export function seatsAeroUrl(origin: string, destination: string): string {
+  return `https://seats.aero/?origin=${encodeURIComponent(origin)}&destination=${encodeURIComponent(destination)}`
 }
 
 export async function listAwardSearches(userId: string): Promise<AwardSearch[]> {

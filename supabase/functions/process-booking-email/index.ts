@@ -27,8 +27,8 @@ Deno.serve(async (req) => {
     await admin.from('inbound_emails').update({ redacted_body: redacted, status: 'processing' }).eq('id', inboundId)
 
     const { data: profile } = await admin.from('profiles').select('*').eq('id', email.user_id).single()
-    if (!profile?.feature_ai_email) {
-      await admin.from('inbound_emails').update({ status: 'skipped', error: 'feature_ai_email off' }).eq('id', inboundId)
+    if (profile?.settings_mode !== 'advanced' || !profile?.feature_ai_email) {
+      await admin.from('inbound_emails').update({ status: 'skipped', error: 'advanced or feature_ai_email off' }).eq('id', inboundId)
       return new Response(JSON.stringify({ skipped: true }), { headers: { ...cors, 'Content-Type': 'application/json' } })
     }
 

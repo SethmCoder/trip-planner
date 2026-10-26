@@ -46,6 +46,9 @@ Deno.serve(async (req) => {
     }
 
     for (const s of searches ?? []) {
+      const { data: owner } = await admin.from('profiles').select('settings_mode, award_alerts_enabled').eq('id', s.user_id).single()
+      if (owner?.settings_mode !== 'advanced') continue
+
       const url = `https://seats.aero/partnerapi/search?origin_airport=${encodeURIComponent(s.origin)}&destination_airport=${encodeURIComponent(s.destination)}&cabin=${encodeURIComponent(s.cabin || 'economy')}&start_date=${encodeURIComponent(s.date_start || '')}&end_date=${encodeURIComponent(s.date_end || s.date_start || '')}`
       let raw: any = null
       try {
@@ -110,8 +113,7 @@ Deno.serve(async (req) => {
         updated_at: new Date().toISOString(),
       }).eq('id', s.id)
 
-      const { data: prof } = await admin.from('profiles').select('award_alerts_enabled').eq('id', s.user_id).single()
-      if (prof?.award_alerts_enabled !== false) {
+      if (owner?.award_alerts_enabled !== false) {
         await admin.from('notifications').insert({
           user_id: s.user_id,
           title: 'Award flight alert',

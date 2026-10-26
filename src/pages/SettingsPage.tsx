@@ -40,7 +40,13 @@ export default function SettingsPage() {
   const switchMode = async (next: SettingsMode) => {
     setMode(next)
     try {
+      // Master gate: Basic turns off Award Flights, Suggest, and email forwarder for the whole app.
       setProfile(await api.updateProfile(profile, { settings_mode: next }))
+      flash(
+        next === 'advanced'
+          ? 'Advanced on — Award Flights, Suggest New Stops, and email forwarding are available below.'
+          : 'Advanced off — Award Flights, Suggest New Stops, and email forwarding are disabled.',
+      )
     } catch (x: any) {
       setErr(x.message)
     }
@@ -294,10 +300,11 @@ export default function SettingsPage() {
         {mode === 'advanced' && (
           <>
             <section className="panel">
-              <h3 style={{ marginTop: 0 }}>Advanced AI &amp; Gmail</h3>
+              <h3 style={{ marginTop: 0 }}>Advanced features</h3>
               <p className="places-hint" style={{ marginTop: 0 }}>
-                These features need server secrets: <code>GROQ_API_KEY</code> (or <code>AI_API_KEY</code>) plus Gmail OAuth for the shared booking mailbox.
-                Core trip planning and Friends stay available with Advanced off.
+                The Basic / Advanced slider above is the master switch. With Advanced on you get the award flight booker
+                (avatar menu → Award Flights), plus the toggles below. Needs server secrets: <code>GROQ_API_KEY</code>,
+                Gmail OAuth for email, and optionally <code>SEATS_AERO_API_KEY</code>. Friends and core trips stay available with Advanced off.
               </p>
               <label className="places-toggle" style={{ justifyContent: 'space-between', width: '100%' }}>
                 <span>Process booking emails with AI</span>
@@ -313,6 +320,9 @@ export default function SettingsPage() {
                   <span className="slider" />
                 </span>
               </label>
+              <p className="places-hint" style={{ marginBottom: 0, marginTop: 14 }}>
+                Award flight booker: open <strong>Award Flights</strong> from the avatar menu while Advanced is on.
+              </p>
               <button type="button" className="btn-orange" style={{ marginTop: 16 }} onClick={saveAdvanced}>
                 Save Advanced settings
               </button>

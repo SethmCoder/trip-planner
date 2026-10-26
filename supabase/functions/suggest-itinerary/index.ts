@@ -31,9 +31,9 @@ Deno.serve(async (req) => {
     const tripId = body.trip_id as string
     if (!tripId) return new Response(JSON.stringify({ error: 'trip_id required' }), { status: 400, headers: cors })
 
-    const { data: profile } = await admin.from('profiles').select('feature_ai_suggest').eq('id', userData.user.id).single()
-    if (!profile?.feature_ai_suggest) {
-      return new Response(JSON.stringify({ error: 'Enable Suggest New Stops in Advanced settings' }), { status: 403, headers: cors })
+    const { data: profile } = await admin.from('profiles').select('settings_mode, feature_ai_suggest').eq('id', userData.user.id).single()
+    if (profile?.settings_mode !== 'advanced' || !profile?.feature_ai_suggest) {
+      return new Response(JSON.stringify({ error: 'Turn on Advanced settings and enable Suggest New Stops' }), { status: 403, headers: cors })
     }
 
     const { data: trip } = await admin.from('trips').select('*').eq('id', tripId).single()

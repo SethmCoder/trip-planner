@@ -29,6 +29,10 @@ Notes:
 
 Core trip planning, Friends, and Award Flights UI work without AI/Gmail/Seats keys. Advanced settings only control AI email processing and Suggest New Stops.
 
+## Fix: trips RLS infinite recursion (existing projects)
+
+If Open Trip / save trip fails with `infinite recursion detected in policy for relation "trips"`, re-run the `is_trip_collaborator` / `is_trip_owner` helpers and the updated `trips` / `itinerary_items` / `trip_collaborators` policies from the bottom of `schema.sql` (search for “Avoid RLS recursion”).
+
 ## Edge Functions to deploy
 
 ```bash

@@ -176,6 +176,9 @@ export default function FriendsPage() {
 
         <section className="panel">
           <h3 style={{ marginTop: 0 }}>Share a saved place</h3>
+          <p className="places-hint" style={{ marginTop: 0 }}>
+            To share a whole named list (e.g. mylist1), open Saved Places, select the list, and use Share list.
+          </p>
           <div style={{ display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))' }}>
             <div>
               <label>Place</label>

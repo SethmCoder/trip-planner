@@ -120,6 +120,10 @@ export interface AwardSearch {
   cabin: string
   seats: number
   booking_app: string
+  /** Display-only loyalty / account label — never a password. */
+  account_label?: string
+  /** Prefer Seats.aero when chosen app has no handoff. */
+  seats_fallback?: boolean
   active: boolean
   notify: boolean
   best_summary: string | null

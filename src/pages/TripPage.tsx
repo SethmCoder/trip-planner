@@ -11,6 +11,7 @@ import { searchPlaces, type GeoResult } from '../lib/geocoding'
 import { bookingLink, discoveryLinks } from '../lib/bookingLinks'
 import { newId, fmtDate, type Trip, type ItineraryItem, type SavedPlace, type ItinerarySuggestion } from '../lib/types'
 import { listSuggestions, requestSuggestStops, updateSuggestionStatus } from '../lib/aiClient'
+import { canUseAiSuggest } from '../lib/advanced'
 import { calculateTransitMinutes, formatTransitTime, isFlight, addMinutes, getQuickestRoute, estimateGapTravel, formatCompactDuration, haversineKm, type LatLng, type GapTravel } from '../lib/routing'
 import { buildPinPopup, categoryFromItemType, emojiForKind, fetchExperiences, fetchHotelsNearby, poiMeta, type MapPoi } from '../lib/pois'
 import { resolvePlaceImage, resolveTripImage } from '../lib/tripImages'
@@ -1597,7 +1598,7 @@ export default function TripPage() {
               </span>
             </label>
           </div>
-          {profile?.feature_ai_suggest && (
+          {canUseAiSuggest(profile) && (
             <div className="ai-suggest-block">
               <div className="ai-suggest-header">
                 <h4>Suggest New Stops</h4>

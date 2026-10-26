@@ -5,11 +5,12 @@ import { useAuth } from '../context/AuthContext'
 import {
   BOOKING_APPS,
   awardDeepLink,
+  bookingAppHasHandoff,
   emptyAwardSearch,
   listAwardSearches,
-  parseAwardPaste,
   saveAwardSearch,
   deleteAwardSearch,
+  seatsAeroUrl,
 } from '../lib/awards'
 import type { AwardSearch } from '../lib/types'
 
@@ -18,7 +19,6 @@ export default function FlightsPage() {
   const nav = useNavigate()
   const [searches, setSearches] = useState<AwardSearch[]>([])
   const [form, setForm] = useState<AwardSearch | null>(null)
-  const [paste, setPaste] = useState('')
   const [msg, setMsg] = useState('')
   const [err, setErr] = useState('')
   const [saving, setSaving] = useState(false)
@@ -32,6 +32,8 @@ export default function FlightsPage() {
     if (!profile) return
     setForm(emptyAwardSearch(profile.id))
     reload().catch(e => setErr(e.message))
+    const t = window.setInterval(() => { reload().catch(() => {}) }, 60_000)
+    return () => window.clearInterval(t)
   }, [profile?.id])
 
   if (!profile || !form) return null
@@ -49,18 +51,22 @@ export default function FlightsPage() {
     }
     setSaving(true)
     try {
-      const preferred = profile.preferred_booking_apps?.[0] || form.booking_app
-      const saved = await saveAwardSearch({
+      const app = form.booking_app || profile.preferred_booking_apps?.[0] || 'roame'
+      const useSeats = form.seats_fallback || !bookingAppHasHandoff(app)
+      await saveAwardSearch({
         ...form,
         id: form.id || emptyAwardSearch(profile.id).id,
         user_id: profile.id,
-        booking_app: preferred || form.booking_app,
-        best_url: awardDeepLink(form.booking_app, form.origin, form.destination, form.date_start),
+        booking_app: app,
+        seats_fallback: useSeats,
+        account_label: form.account_label || '',
+        best_url: useSeats
+          ? seatsAeroUrl(form.origin, form.destination)
+          : awardDeepLink(app, form.origin, form.destination, form.date_start),
       })
       setForm(emptyAwardSearch(profile.id))
-      setMsg('Search saved. Overnight monitoring runs when SEATS_AERO_API_KEY is configured on the server.')
+      setMsg('Search saved. When overnight monitoring finds a match, it appears here and in notifications.')
       await reload()
-      void saved
     } catch (x: any) {
       setErr(x.message)
     } finally {
@@ -68,28 +74,37 @@ export default function FlightsPage() {
     }
   }
 
-  const applyPaste = async (search: AwardSearch) => {
-    const parsed = parseAwardPaste(paste)
-    if (!parsed) { setErr('Paste award availability text first.'); return }
-    try {
-      await saveAwardSearch({
-        ...search,
-        best_summary: parsed.summary,
-        best_points: parsed.points,
-        best_url: awardDeepLink(search.booking_app, search.origin, search.destination, search.date_start),
-        updated_at: new Date().toISOString(),
-      })
-      setPaste('')
-      setMsg('Best result updated from paste.')
-      await reload()
-    } catch (x: any) {
-      setErr(x.message)
-    }
+  const toggleNotify = async (s: AwardSearch, notify: boolean) => {
+    await saveAwardSearch({ ...s, notify, active: notify ? s.active : s.active })
+    await reload()
+  }
+
+  const toggleActive = async (s: AwardSearch, active: boolean) => {
+    await saveAwardSearch({ ...s, active })
+    await reload()
+  }
+
+  const useSeatsFallback = async (s: AwardSearch) => {
+    await saveAwardSearch({
+      ...s,
+      seats_fallback: true,
+      booking_app: 'seats_aero',
+      best_url: seatsAeroUrl(s.origin, s.destination),
+    })
+    setMsg('Switched this search to Seats.aero handoff.')
+    await reload()
   }
 
   const remove = async (id: string) => {
     await deleteAwardSearch(id)
     await reload()
+  }
+
+  const bookUrl = (s: AwardSearch) => {
+    if (s.seats_fallback || s.booking_app === 'seats_aero' || !bookingAppHasHandoff(s.booking_app)) {
+      return s.best_url || seatsAeroUrl(s.origin, s.destination)
+    }
+    return s.best_url || awardDeepLink(s.booking_app, s.origin, s.destination, s.date_start)
   }
 
   return (
@@ -102,7 +117,8 @@ export default function FlightsPage() {
             <button type="button" className="btn-ghost" onClick={() => nav('/')}>Main</button>
           </div>
           <p className="places-hint" style={{ marginTop: 0 }}>
-            Save a search for overnight monitoring via Seats.aero (when the API key is set). Prefer Roame or Google Flights deep links to finish booking.
+            Describe your ideal award flight. Overnight monitoring uses Seats.aero when configured, ranks matches with AI,
+            then notifies you so you can book in your chosen app.
           </p>
           <form onSubmit={submit} className="flights-form">
             <label>Origin</label>
@@ -158,9 +174,29 @@ export default function FlightsPage() {
             <select value={form.booking_app} onChange={e => set('booking_app', e.target.value)}>
               {BOOKING_APPS.map(a => <option key={a.id} value={a.id}>{a.label}</option>)}
             </select>
-            <label className="places-toggle" style={{ marginTop: 8 }}>
-              <input type="checkbox" checked={form.notify} onChange={e => set('notify', e.target.checked)} />
-              <span>Notify when a viable award appears</span>
+            <label>Account label (optional)</label>
+            <input
+              value={form.account_label || ''}
+              onChange={e => set('account_label', e.target.value)}
+              placeholder="e.g. United MileagePlus — never a password"
+            />
+            <label className="places-toggle" style={{ justifyContent: 'space-between', width: '100%', marginTop: 12 }}>
+              <span>Notify when a match is found</span>
+              <span className="toggle">
+                <input type="checkbox" checked={form.notify} onChange={e => set('notify', e.target.checked)} />
+                <span className="slider" />
+              </span>
+            </label>
+            <label className="places-toggle" style={{ justifyContent: 'space-between', width: '100%', marginTop: 12 }}>
+              <span>Use Seats.aero if app can’t be viewed</span>
+              <span className="toggle">
+                <input
+                  type="checkbox"
+                  checked={Boolean(form.seats_fallback) || form.booking_app === 'seats_aero'}
+                  onChange={e => set('seats_fallback', e.target.checked)}
+                />
+                <span className="slider" />
+              </span>
             </label>
             <button type="submit" className="btn-orange" style={{ marginTop: 14 }} disabled={saving}>
               {saving ? 'Saving…' : 'Save search'}
@@ -174,37 +210,72 @@ export default function FlightsPage() {
 
         <section className="flights-results-panel">
           <h2 style={{ marginTop: 0, fontSize: '1.2rem', color: 'var(--slate-800)' }}>Current searches</h2>
+          <p className="places-hint">AI / Seats findings appear here. Open the link to finish booking in your app.</p>
           {searches.length === 0 ? (
             <p className="places-hint">No saved searches yet. Create one on the left.</p>
           ) : (
             <ul className="award-search-list">
-              {searches.map(s => (
-                <li key={s.id} className="panel award-search-card">
-                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
-                    <strong>{s.origin} → {s.destination}</strong>
-                    <span className="places-hint">{s.cabin} · {s.seats} seat{s.seats === 1 ? '' : 's'}</span>
-                  </div>
-                  <p className="places-hint" style={{ margin: '6px 0' }}>
-                    {s.date_start}{s.date_end && s.date_end !== s.date_start ? ` – ${s.date_end}` : ''}
-                    {s.preferred_airline ? ` · ${s.preferred_airline}` : ''}
-                    {s.notify ? ' · alerts on' : ''}
-                  </p>
-                  <p style={{ margin: '8px 0', color: 'var(--slate-800)' }}>
-                    {s.best_summary
-                      ? <>Best so far: {s.best_summary}{s.best_points != null ? ` (${s.best_points.toLocaleString()} pts)` : ''}</>
-                      : 'No overnight result yet — use deep links or paste availability below.'}
-                  </p>
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-                    <a className="btn-orange" style={{ textDecoration: 'none' }} href={awardDeepLink(s.booking_app, s.origin, s.destination, s.date_start)} target="_blank" rel="noreferrer">
-                      Open {BOOKING_APPS.find(a => a.id === s.booking_app)?.label || 'booking app'}
-                    </a>
-                    <button type="button" className="btn-ghost" onClick={() => remove(s.id)}>Remove</button>
-                  </div>
-                  <label style={{ marginTop: 12 }}>Paste award result (no Seats.aero key needed)</label>
-                  <textarea rows={2} value={paste} onChange={e => setPaste(e.target.value)} placeholder="e.g. UA 837 · 70,000 pts business · Apr 12" />
-                  <button type="button" className="btn-ghost" style={{ marginTop: 8 }} onClick={() => applyPaste(s)}>Update best from paste</button>
-                </li>
-              ))}
+              {searches.map(s => {
+                const appLabel = BOOKING_APPS.find(a => a.id === s.booking_app)?.label || s.booking_app
+                const needsSeatsOffer = !s.seats_fallback && s.booking_app !== 'seats_aero' && !bookingAppHasHandoff(s.booking_app)
+                return (
+                  <li key={s.id} className="panel award-search-card">
+                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
+                      <strong>{s.origin} → {s.destination}</strong>
+                      <span className="places-hint">{s.cabin} · {s.seats} seat{s.seats === 1 ? '' : 's'}</span>
+                    </div>
+                    <p className="places-hint" style={{ margin: '6px 0' }}>
+                      {s.date_start}{s.date_end && s.date_end !== s.date_start ? ` – ${s.date_end}` : ''}
+                      {s.preferred_airline ? ` · ${s.preferred_airline}` : ''}
+                      {` · ${appLabel}`}
+                      {s.account_label ? ` · ${s.account_label}` : ''}
+                    </p>
+
+                    <div className="award-ai-result">
+                      {s.best_summary ? (
+                        <>
+                          <div className="award-ai-label">Best match so far</div>
+                          <p style={{ margin: '6px 0', color: 'var(--slate-800)' }}>
+                            {s.best_summary}
+                            {s.best_points != null ? ` · ${s.best_points.toLocaleString()} pts` : ''}
+                          </p>
+                          <a className="btn-orange" style={{ textDecoration: 'none', display: 'inline-block' }} href={bookUrl(s)} target="_blank" rel="noreferrer">
+                            Book in {s.seats_fallback || s.booking_app === 'seats_aero' ? 'Seats.aero' : appLabel}
+                          </a>
+                        </>
+                      ) : (
+                        <p className="places-hint" style={{ margin: 0 }}>
+                          Waiting for overnight AI / Seats results. Monitoring {s.active ? 'is on' : 'is paused'}.
+                        </p>
+                      )}
+                    </div>
+
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, marginTop: 14, alignItems: 'center' }}>
+                      <label className="places-toggle">
+                        <span style={{ marginRight: 8 }}>Active</span>
+                        <span className="toggle">
+                          <input type="checkbox" checked={s.active} onChange={e => toggleActive(s, e.target.checked)} />
+                          <span className="slider" />
+                        </span>
+                      </label>
+                      <label className="places-toggle">
+                        <span style={{ marginRight: 8 }}>Notify</span>
+                        <span className="toggle">
+                          <input type="checkbox" checked={s.notify} onChange={e => toggleNotify(s, e.target.checked)} />
+                          <span className="slider" />
+                        </span>
+                      </label>
+                      <button type="button" className="btn-ghost" onClick={() => remove(s.id)}>Remove</button>
+                    </div>
+
+                    {(needsSeatsOffer || (!s.seats_fallback && s.booking_app !== 'seats_aero')) && (
+                      <button type="button" className="btn-ghost" style={{ marginTop: 10 }} onClick={() => useSeatsFallback(s)}>
+                        Use Seats.aero instead
+                      </button>
+                    )}
+                  </li>
+                )
+              })}
             </ul>
           )}
         </section>

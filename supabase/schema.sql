@@ -280,16 +280,49 @@ create policy "own suggestions" on public.itinerary_suggestions for all using (a
 drop policy if exists "own friendships" on public.friendships;
 create policy "own friendships" on public.friendships for all using (auth.uid() = requester_id or auth.uid() = addressee_id)
   with check (auth.uid() = requester_id or auth.uid() = addressee_id);
+-- Avoid RLS recursion: trips ↔ trip_collaborators must not cross-query under RLS
+create or replace function public.is_trip_collaborator(p_trip_id uuid, p_editor_only boolean default false)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select exists (
+    select 1
+    from public.trip_collaborators c
+    where c.trip_id = p_trip_id
+      and c.user_id = auth.uid()
+      and (not p_editor_only or c.role = 'editor')
+  );
+$$;
+
+create or replace function public.is_trip_owner(p_trip_id uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select exists (
+    select 1 from public.trips t
+    where t.id = p_trip_id and t.user_id = auth.uid()
+  );
+$$;
+
 drop policy if exists "trip collab read" on public.trip_collaborators;
-create policy "trip collab read" on public.trip_collaborators for select using (
-  auth.uid() = user_id or exists (select 1 from public.trips t where t.id = trip_id and t.user_id = auth.uid())
-);
 drop policy if exists "trip collab write owner" on public.trip_collaborators;
-create policy "trip collab write owner" on public.trip_collaborators for all using (
-  exists (select 1 from public.trips t where t.id = trip_id and t.user_id = auth.uid())
-) with check (
-  exists (select 1 from public.trips t where t.id = trip_id and t.user_id = auth.uid())
+drop policy if exists "trip collab participants" on public.trip_collaborators;
+drop policy if exists "trip collab owner write" on public.trip_collaborators;
+create policy "trip collab participants" on public.trip_collaborators for select using (
+  auth.uid() = user_id or public.is_trip_owner(trip_id)
 );
+create policy "trip collab owner write" on public.trip_collaborators for all using (
+  public.is_trip_owner(trip_id)
+) with check (
+  public.is_trip_owner(trip_id)
+);
+
 drop policy if exists "shared places" on public.shared_saved_places;
 create policy "shared places" on public.shared_saved_places for all using (auth.uid() = owner_id or auth.uid() = shared_with_id)
   with check (auth.uid() = owner_id);
@@ -302,23 +335,95 @@ create policy "own award results" on public.award_results for all using (
   exists (select 1 from public.award_searches s where s.id = search_id and s.user_id = auth.uid())
 );
 
--- Collaborators can read/edit trips they are invited to
+-- Collaborators can read/edit trips they are invited to (via SECURITY DEFINER helper — no recursion)
 drop policy if exists "own trips" on public.trips;
 create policy "own trips" on public.trips for all using (
-  auth.uid() = user_id
-  or exists (select 1 from public.trip_collaborators c where c.trip_id = id and c.user_id = auth.uid())
+  auth.uid() = trips.user_id or public.is_trip_collaborator(trips.id, false)
 ) with check (
-  auth.uid() = user_id
-  or exists (select 1 from public.trip_collaborators c where c.trip_id = id and c.user_id = auth.uid() and c.role = 'editor')
+  auth.uid() = trips.user_id or public.is_trip_collaborator(trips.id, true)
 );
 drop policy if exists "own items" on public.itinerary_items;
 create policy "own items" on public.itinerary_items for all using (
-  auth.uid() = user_id
-  or exists (select 1 from public.trip_collaborators c where c.trip_id = trip_id and c.user_id = auth.uid())
+  auth.uid() = itinerary_items.user_id or public.is_trip_collaborator(itinerary_items.trip_id, false)
 ) with check (
-  auth.uid() = user_id
-  or exists (select 1 from public.trip_collaborators c where c.trip_id = trip_id and c.user_id = auth.uid() and c.role = 'editor')
+  auth.uid() = itinerary_items.user_id or public.is_trip_collaborator(itinerary_items.trip_id, true)
 );
+
+-- Named saved-place lists + friend share
+create table if not exists public.saved_place_lists (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references public.profiles(id) on delete cascade,
+  name text not null default '',
+  created_at timestamptz not null default now()
+);
+create index if not exists idx_saved_place_lists_user on public.saved_place_lists(user_id, created_at desc);
+
+create table if not exists public.saved_place_list_items (
+  id uuid primary key default gen_random_uuid(),
+  list_id uuid not null references public.saved_place_lists(id) on delete cascade,
+  place_id uuid not null references public.saved_places(id) on delete cascade,
+  sort_order int not null default 0,
+  unique (list_id, place_id)
+);
+create index if not exists idx_list_items_list on public.saved_place_list_items(list_id, sort_order);
+
+create table if not exists public.shared_saved_lists (
+  id uuid primary key default gen_random_uuid(),
+  list_id uuid not null references public.saved_place_lists(id) on delete cascade,
+  owner_id uuid not null references public.profiles(id) on delete cascade,
+  shared_with_id uuid not null references public.profiles(id) on delete cascade,
+  created_at timestamptz not null default now(),
+  unique (list_id, shared_with_id)
+);
+
+alter table public.saved_place_lists enable row level security;
+alter table public.saved_place_list_items enable row level security;
+alter table public.shared_saved_lists enable row level security;
+
+drop policy if exists "own place lists" on public.saved_place_lists;
+create policy "own place lists" on public.saved_place_lists for all using (
+  auth.uid() = saved_place_lists.user_id
+  or exists (
+    select 1 from public.shared_saved_lists s
+    where s.list_id = saved_place_lists.id and s.shared_with_id = auth.uid()
+  )
+) with check (auth.uid() = saved_place_lists.user_id);
+
+drop policy if exists "own list items" on public.saved_place_list_items;
+create policy "own list items" on public.saved_place_list_items for all using (
+  exists (
+    select 1 from public.saved_place_lists l
+    where l.id = saved_place_list_items.list_id and (
+      l.user_id = auth.uid()
+      or exists (select 1 from public.shared_saved_lists s where s.list_id = l.id and s.shared_with_id = auth.uid())
+    )
+  )
+) with check (
+  exists (
+    select 1 from public.saved_place_lists l
+    where l.id = saved_place_list_items.list_id and l.user_id = auth.uid()
+  )
+);
+
+drop policy if exists "shared lists" on public.shared_saved_lists;
+create policy "shared lists" on public.shared_saved_lists for all using (
+  auth.uid() = shared_saved_lists.owner_id or auth.uid() = shared_saved_lists.shared_with_id
+) with check (auth.uid() = shared_saved_lists.owner_id);
+
+-- Friends can read places that appear on lists shared with them
+drop policy if exists "read places on shared lists" on public.saved_places;
+create policy "read places on shared lists" on public.saved_places for select using (
+  exists (
+    select 1
+    from public.saved_place_list_items i
+    join public.shared_saved_lists s on s.list_id = i.list_id
+    where i.place_id = saved_places.id and s.shared_with_id = auth.uid()
+  )
+);
+
+-- Optional account label on award searches (display only — never passwords)
+alter table public.award_searches add column if not exists account_label text not null default '';
+alter table public.award_searches add column if not exists seats_fallback boolean not null default false;
 
 insert into storage.buckets (id, name, public) values ('inbound-emails','inbound-emails',false) on conflict (id) do nothing;
 drop policy if exists "inbound email own" on storage.objects;

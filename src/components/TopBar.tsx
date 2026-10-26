@@ -4,6 +4,7 @@ import Logo from './Logo'
 import NotificationBell from './NotificationBell'
 import { useAuth } from '../context/AuthContext'
 import * as api from '../lib/data'
+import { canUseAwardFlights } from '../lib/advanced'
 import { bookingStatusLabel, formatDateRange, tripDurationDays, type Trip } from '../lib/types'
 
 export default function TopBar() {
@@ -91,7 +92,9 @@ export default function TopBar() {
           <div className="topbar-menu" role="menu">
             <button type="button" role="menuitem" onClick={() => { setOpen(false); nav('/') }}>Main Page</button>
             <button type="button" role="menuitem" onClick={() => { setOpen(false); nav('/saved') }}>Saved Places</button>
-            <button type="button" role="menuitem" onClick={() => { setOpen(false); nav('/flights') }}>Award Flights</button>
+            {canUseAwardFlights(profile) && (
+              <button type="button" role="menuitem" onClick={() => { setOpen(false); nav('/flights') }}>Award Flights</button>
+            )}
             <button type="button" role="menuitem" onClick={() => { setOpen(false); nav('/friends') }}>Friends</button>
             <button type="button" role="menuitem" onClick={() => { setOpen(false); nav('/settings') }}>Settings</button>
             <button type="button" role="menuitem" onClick={async () => { await logout(); nav('/login') }}>Logout</button>
