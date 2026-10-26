@@ -40,12 +40,19 @@ export default function SettingsPage() {
   const switchMode = async (next: SettingsMode) => {
     setMode(next)
     try {
-      // Master gate: Basic turns off Award Flights, Suggest, and email forwarder for the whole app.
-      setProfile(await api.updateProfile(profile, { settings_mode: next }))
+      // Master slider: Advanced off disables flight booker, Suggest itinerary, and Gmail reading.
+      const patch = next === 'advanced'
+        ? { settings_mode: next as SettingsMode, feature_ai_suggest: true, feature_ai_email: aiEmail || true }
+        : { settings_mode: next as SettingsMode }
+      if (next === 'advanced') {
+        setAiSuggest(true)
+        setAiEmail(true)
+      }
+      setProfile(await api.updateProfile(profile, patch))
       flash(
         next === 'advanced'
-          ? 'Advanced on — Award Flights, Suggest New Stops, and email forwarding are available below.'
-          : 'Advanced off — Award Flights, Suggest New Stops, and email forwarding are disabled.',
+          ? 'Advanced on — Award Flights, Suggest itinerary, and Gmail reading are available.'
+          : 'Advanced off — Award Flights, Suggest itinerary, and Gmail reading are disabled.',
       )
     } catch (x: any) {
       setErr(x.message)
@@ -156,17 +163,26 @@ export default function SettingsPage() {
     <div style={{ display: 'flex', flexDirection: 'column', minHeight: '100vh' }}>
       <TopBar />
       <main style={{ maxWidth: 760, width: '94vw', margin: '24px auto', display: 'flex', flexDirection: 'column', gap: 18 }}>
-        <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
-          <h1 style={{ margin: 0, fontSize: '1.75rem', fontWeight: 700, color: 'var(--slate-800)' }}>Settings</h1>
-          <div className="settings-mode-toggle" role="tablist" aria-label="Settings mode">
-            <button type="button" role="tab" aria-selected={mode === 'basic'} className={mode === 'basic' ? 'active' : ''} onClick={() => switchMode('basic')}>
-              Basic
-            </button>
-            <button type="button" role="tab" aria-selected={mode === 'advanced'} className={mode === 'advanced' ? 'active' : ''} onClick={() => switchMode('advanced')}>
-              Advanced
-            </button>
-          </div>
-        </div>
+        <h1 style={{ margin: 0, fontSize: '1.75rem', fontWeight: 700, color: 'var(--slate-800)' }}>Settings</h1>
+
+        <section className="panel">
+          <h3 style={{ marginTop: 0 }}>Advanced features</h3>
+          <p className="places-hint" style={{ marginTop: 0 }}>
+            Master switch for Award Flights (flight booker), Suggest itinerary on trips, and Gmail booking-email reading.
+            Friends and core trip planning stay available either way.
+          </p>
+          <label className="places-toggle" style={{ justifyContent: 'space-between', width: '100%' }}>
+            <span>{mode === 'advanced' ? 'Advanced on' : 'Advanced off (Basic)'}</span>
+            <span className="toggle">
+              <input
+                type="checkbox"
+                checked={mode === 'advanced'}
+                onChange={e => switchMode(e.target.checked ? 'advanced' : 'basic')}
+              />
+              <span className="slider" />
+            </span>
+          </label>
+        </section>
 
         {mode === 'basic' && (
           <>
@@ -300,28 +316,20 @@ export default function SettingsPage() {
         {mode === 'advanced' && (
           <>
             <section className="panel">
-              <h3 style={{ marginTop: 0 }}>Advanced features</h3>
+              <h3 style={{ marginTop: 0 }}>Advanced details</h3>
               <p className="places-hint" style={{ marginTop: 0 }}>
-                The Basic / Advanced slider above is the master switch. With Advanced on you get the award flight booker
-                (avatar menu → Award Flights), plus the toggles below. Needs server secrets: <code>GROQ_API_KEY</code>,
-                Gmail OAuth for email, and optionally <code>SEATS_AERO_API_KEY</code>. Friends and core trips stay available with Advanced off.
+                With Advanced on: use <strong>Suggest itinerary</strong> on trip pages, <strong>Award Flights</strong> in the avatar menu,
+                and optional Gmail forwarding below. Server secrets: <code>GROQ_API_KEY</code>, Gmail OAuth, optional <code>SEATS_AERO_API_KEY</code>.
               </p>
               <label className="places-toggle" style={{ justifyContent: 'space-between', width: '100%' }}>
-                <span>Process booking emails with AI</span>
+                <span>Gmail booking-email reading</span>
                 <span className="toggle">
                   <input type="checkbox" checked={aiEmail} onChange={e => setAiEmail(e.target.checked)} />
                   <span className="slider" />
                 </span>
               </label>
-              <label className="places-toggle" style={{ justifyContent: 'space-between', width: '100%', marginTop: 12 }}>
-                <span>Suggest New Stops on trips</span>
-                <span className="toggle">
-                  <input type="checkbox" checked={aiSuggest} onChange={e => setAiSuggest(e.target.checked)} />
-                  <span className="slider" />
-                </span>
-              </label>
-              <p className="places-hint" style={{ marginBottom: 0, marginTop: 14 }}>
-                Award flight booker: open <strong>Award Flights</strong> from the avatar menu while Advanced is on.
+              <p className="places-hint" style={{ marginTop: 12, marginBottom: 0 }}>
+                Suggest itinerary and Award Flights are included while this Advanced slider is on.
               </p>
               <button type="button" className="btn-orange" style={{ marginTop: 16 }} onClick={saveAdvanced}>
                 Save Advanced settings

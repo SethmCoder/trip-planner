@@ -46,16 +46,29 @@ export async function updateSuggestionStatus(id: string, status: 'added' | 'dism
  * Call the suggest-itinerary Edge Function. Falls back to a local gap-fill heuristic
  * when the function / AI key is unavailable so Basic mode still works without Advanced.
  */
-export async function requestSuggestStops(tripId: string): Promise<ItinerarySuggestion[]> {
+export interface SuggestItineraryResult {
+  suggestions: ItinerarySuggestion[]
+  /** Ordered item ids for non-protected stops; hotels/flights stay anchored. */
+  reorder_ids?: string[]
+  organization_note?: string
+}
+
+export async function requestSuggestStops(tripId: string): Promise<SuggestItineraryResult> {
   if (isSupabaseConfigured && supabase) {
     const { data, error } = await supabase.functions.invoke('suggest-itinerary', { body: { trip_id: tripId } })
-    if (!error && data?.suggestions) return data.suggestions as ItinerarySuggestion[]
-    // Fall through to local heuristic if function missing or AI key unset
+    if (!error && data?.suggestions) {
+      return {
+        suggestions: data.suggestions as ItinerarySuggestion[],
+        reorder_ids: Array.isArray(data.reorder_ids) ? data.reorder_ids : undefined,
+        organization_note: data.organization_note || undefined,
+      }
+    }
     if (error && !/FunctionsFetchError|Failed to send|not found|404/i.test(String(error.message || error))) {
       console.warn('suggest-itinerary:', error)
     }
   }
-  return localHeuristicSuggestions(tripId)
+  const suggestions = await localHeuristicSuggestions(tripId)
+  return { suggestions }
 }
 
 async function localHeuristicSuggestions(tripId: string): Promise<ItinerarySuggestion[]> {

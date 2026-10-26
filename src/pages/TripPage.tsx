@@ -11,7 +11,7 @@ import { searchPlaces, type GeoResult } from '../lib/geocoding'
 import { bookingLink, discoveryLinks } from '../lib/bookingLinks'
 import { newId, fmtDate, type Trip, type ItineraryItem, type SavedPlace, type ItinerarySuggestion } from '../lib/types'
 import { listSuggestions, requestSuggestStops, updateSuggestionStatus } from '../lib/aiClient'
-import { canUseAiSuggest } from '../lib/advanced'
+import { canUseAiSuggest, isAdvancedEnabled } from '../lib/advanced'
 import { calculateTransitMinutes, formatTransitTime, isFlight, addMinutes, getQuickestRoute, estimateGapTravel, formatCompactDuration, haversineKm, type LatLng, type GapTravel } from '../lib/routing'
 import { buildPinPopup, categoryFromItemType, emojiForKind, fetchExperiences, fetchHotelsNearby, poiMeta, type MapPoi } from '../lib/pois'
 import { resolvePlaceImage, resolveTripImage } from '../lib/tripImages'
@@ -242,6 +242,7 @@ export default function TripPage() {
   const [aiSuggestions, setAiSuggestions] = useState<ItinerarySuggestion[]>([])
   const [aiSuggestLoading, setAiSuggestLoading] = useState(false)
   const [aiSuggestErr, setAiSuggestErr] = useState('')
+  const [aiOrgNote, setAiOrgNote] = useState('')
 
   useEffect(() => {
     if (id) {
@@ -942,15 +943,57 @@ export default function TripPage() {
     })
   }
 
+  const isProtectedItem = (it: ItineraryItem) =>
+    it.type === 'hotel' || (it.type === 'transit' && /plane|flight|air/i.test(it.mode_of_transport || it.subtype || ''))
+
+  const applyAiReorder = async (reorderIds: string[]) => {
+    if (!reorderIds.length) return
+    const byId = new Map(items.map(i => [i.id, i]))
+    const protectedItems = items.filter(isProtectedItem)
+    const movable = items.filter(i => !isProtectedItem(i))
+    const ordered: ItineraryItem[] = []
+    const used = new Set<string>()
+    for (const rid of reorderIds) {
+      const it = byId.get(rid)
+      if (it && !isProtectedItem(it) && !used.has(rid)) {
+        ordered.push(it)
+        used.add(rid)
+      }
+    }
+    for (const it of movable) {
+      if (!used.has(it.id)) ordered.push(it)
+    }
+    // Keep relative day flow: merge protected anchors back by original sort position
+    const merged = [...items].sort((a, b) => a.sort_order - b.sort_order)
+    const nextMovable = [...ordered]
+    let mi = 0
+    const result: ItineraryItem[] = merged.map(it => {
+      if (isProtectedItem(it)) return it
+      const n = nextMovable[mi++]
+      return n || it
+    })
+    const withOrder = result.map((it, idx) => ({ ...it, sort_order: idx }))
+    setItems(withOrder)
+    await api.saveItems(withOrder)
+    void protectedItems
+  }
+
   const runAiSuggest = async () => {
     if (!id || !profile) return
+    if (!isAdvancedEnabled(profile)) {
+      setAiSuggestErr('Turn on Advanced in Settings to use Suggest itinerary.')
+      return
+    }
     setAiSuggestErr('')
+    setAiOrgNote('')
     setAiSuggestLoading(true)
     try {
-      const rows = await requestSuggestStops(id)
-      setAiSuggestions(rows.filter(r => r.status === 'suggested'))
+      const res = await requestSuggestStops(id)
+      setAiSuggestions((res.suggestions || []).filter(r => r.status === 'suggested'))
+      if (res.organization_note) setAiOrgNote(res.organization_note)
+      if (res.reorder_ids?.length) await applyAiReorder(res.reorder_ids)
     } catch (e: any) {
-      setAiSuggestErr(e.message || 'Could not suggest stops')
+      setAiSuggestErr(e.message || 'Could not suggest itinerary')
     } finally {
       setAiSuggestLoading(false)
     }
@@ -1598,17 +1641,21 @@ export default function TripPage() {
               </span>
             </label>
           </div>
-          {canUseAiSuggest(profile) && (
+          {canUseAiSuggest(profile) ? (
             <div className="ai-suggest-block">
-              <div className="ai-suggest-header">
-                <h4>Suggest New Stops</h4>
-                <button type="button" className="btn-orange" disabled={aiSuggestLoading} onClick={runAiSuggest}>
-                  {aiSuggestLoading ? 'Suggesting…' : 'Suggest New Stops'}
-                </button>
-              </div>
-              <p className="places-hint" style={{ margin: 0 }}>
-                Fills free-time gaps with restaurants and activities. Hotels and flights are never moved or deleted.
+              <button
+                type="button"
+                className="btn-orange suggest-itinerary-btn"
+                disabled={aiSuggestLoading}
+                onClick={runAiSuggest}
+              >
+                {aiSuggestLoading ? 'Suggesting…' : 'Suggest itinerary'}
+              </button>
+              <p className="places-hint" style={{ margin: '8px 0 0' }}>
+                Uses AI on your stops and Saved Places to rearrange activities/restaurants and propose new stops.
+                Hotels and flights stay fixed.
               </p>
+              {aiOrgNote && <p className="places-hint" style={{ marginTop: 8 }}>{aiOrgNote}</p>}
               {aiSuggestErr && <div className="error" style={{ marginTop: 8 }}>{aiSuggestErr}</div>}
               {aiSuggestions.map(s => (
                 <div key={s.id} className="ai-suggest-card">
@@ -1621,6 +1668,10 @@ export default function TripPage() {
                 </div>
               ))}
             </div>
+          ) : (
+            <p className="places-hint" style={{ marginTop: 8 }}>
+              Turn on <b>Advanced</b> in Settings to use Suggest itinerary.
+            </p>
           )}
           <p className="places-hint">
             Drag to reorder. <b>All days</b> shows every day’s route in its own color; click a day to focus it.
