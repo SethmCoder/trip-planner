@@ -8,9 +8,19 @@ import { isGoogleMapsEnabled } from '../lib/googleConfig'
 import { LANGUAGE_OPTIONS, type DisplayLanguage, type SettingsMode } from '../lib/types'
 import { requestBrowserNotifyPermission } from '../lib/notifications'
 
-const PRESETS = ['✈️', '🧳', '🗺️', '🌍', '🏖️', '⛰️', '🚆', '📸'].map((e, i) => ({
-  e,
-  url: `https://api.dicebear.com/9.x/adventurer/svg?seed=travel${i}`,
+/** DiceBear Adventurer faces with travel-themed seeds + sky/sand backgrounds. */
+const PRESETS = [
+  { e: '✈️', seed: 'PilotSkyways', bg: 'b6e3f4' },
+  { e: '🧳', seed: 'BackpackerNomad', bg: 'c0aede' },
+  { e: '🗺️', seed: 'GlobeTrotterMap', bg: 'd1f4d1' },
+  { e: '🌍', seed: 'WorldWanderer', bg: 'ffd5dc' },
+  { e: '🏖️', seed: 'BeachHopperSun', bg: 'ffdfbf' },
+  { e: '⛰️', seed: 'MountainHikerPeak', bg: 'c9e4de' },
+  { e: '🚆', seed: 'TrainHopperRail', bg: 'fce1a8' },
+  { e: '📸', seed: 'TravelPhotogLens', bg: 'a0c4ff' },
+].map(p => ({
+  e: p.e,
+  url: `https://api.dicebear.com/9.x/adventurer/svg?seed=${encodeURIComponent(p.seed)}&backgroundColor=${p.bg}`,
 }))
 
 export default function SettingsPage() {
@@ -273,7 +283,7 @@ export default function SettingsPage() {
                   <input id="avatar-file" type="file" accept="image/*" hidden onChange={e => handleFile(e.target.files?.[0])} />
                 </div>
               </div>
-              <label>Common Pictures</label>
+              <label>Travel avatars</label>
               <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
                 {PRESETS.map(p => (
                   <button
