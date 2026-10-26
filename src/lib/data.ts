@@ -20,8 +20,13 @@ function load(): DB {
   const d = seed(); save(d); return d
 }
 function save(d: DB) { localStorage.setItem(KEY, JSON.stringify(d)) }
+function ensureForwardingToken(): string {
+  return (crypto?.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2) + Date.now()).replace(/-/g, '')
+}
+
 export function normalizeProfile(p: Profile | null | undefined): Profile | null {
   if (!p) return null
+  const apps = Array.isArray(p.preferred_booking_apps) ? p.preferred_booking_apps : ['roame', 'google_flights']
   return {
     id: p.id,
     username: p.username,
@@ -29,6 +34,13 @@ export function normalizeProfile(p: Profile | null | undefined): Profile | null 
     avatar_url: p.avatar_url ?? null,
     booking_alerts_enabled: p.booking_alerts_enabled !== false,
     preferred_language: p.preferred_language || 'en',
+    settings_mode: p.settings_mode === 'advanced' ? 'advanced' : 'basic',
+    feature_ai_email: Boolean(p.feature_ai_email),
+    feature_ai_suggest: Boolean(p.feature_ai_suggest),
+    forwarding_token: p.forwarding_token || null,
+    award_alerts_enabled: p.award_alerts_enabled !== false,
+    preferred_booking_apps: apps,
+    google_places_connected: Boolean(p.google_places_connected),
   }
 }
 const strip = (u: LocalUser): Profile => normalizeProfile(u)!
@@ -37,9 +49,21 @@ const strip = (u: LocalUser): Profile => normalizeProfile(u)!
 export async function getSessionProfile(): Promise<Profile | null> {
   if (isSupabaseConfigured && supabase) {
     const { data } = await supabase.auth.getSession(); if (!data.session) return null
-    const { data: p } = await supabase.from('profiles').select('*').eq('id', data.session.user.id).single(); return normalizeProfile(p)
+    const { data: p } = await supabase.from('profiles').select('*').eq('id', data.session.user.id).single()
+    const normalized = normalizeProfile(p)
+    if (normalized && !normalized.forwarding_token) {
+      try {
+        return await regenerateForwardingToken(normalized)
+      } catch {
+        return { ...normalized, forwarding_token: ensureForwardingToken() }
+      }
+    }
+    return normalized
   }
-  const d = load(); const u = d.users.find(x => x.id === d.sessionUserId); return u ? strip(u) : null
+  const d = load(); const u = d.users.find(x => x.id === d.sessionUserId)
+  if (!u) return null
+  if (!u.forwarding_token) { u.forwarding_token = ensureForwardingToken(); save(d) }
+  return strip(u)
 }
 export async function login(identifier: string, password: string): Promise<Profile> {
   if (isSupabaseConfigured && supabase) {
@@ -57,10 +81,15 @@ export async function createAccount(email: string, username: string, password: s
   if (isSupabaseConfigured && supabase) {
     const { data, error } = await supabase.auth.signUp({ email, password }); if (error) throw new Error(error.message)
     if (!data.user) throw new Error('Account created — please confirm your email, then log in.')
-    const row = { id: data.user.id, email, username, avatar_url: null, booking_alerts_enabled: true, preferred_language: 'en' }
+    const row: Profile = {
+      id: data.user.id, email, username, avatar_url: null, booking_alerts_enabled: true, preferred_language: 'en',
+      settings_mode: 'basic', feature_ai_email: false, feature_ai_suggest: false,
+      forwarding_token: ensureForwardingToken(), award_alerts_enabled: true,
+      preferred_booking_apps: ['roame', 'google_flights'], google_places_connected: false,
+    }
     const { error: e2 } = await supabase.from('profiles').upsert(row)
     if (e2) {
-      if (/booking_alerts|preferred_language/i.test(e2.message)) {
+      if (/booking_alerts|preferred_language|settings_mode|feature_ai|forwarding|award_|preferred_booking|google_places/i.test(e2.message)) {
         const { error: e3 } = await supabase.from('profiles').upsert({ id: data.user.id, email, username, avatar_url: null })
         if (e3) throw new Error(e3.message)
       } else throw new Error(e2.message)
@@ -70,7 +99,12 @@ export async function createAccount(email: string, username: string, password: s
   const d = load()
   if (d.users.some(x => x.username.toLowerCase() === username.toLowerCase())) throw new Error('Username already taken')
   if (d.users.some(x => x.email.toLowerCase() === email.toLowerCase())) throw new Error('Email already registered')
-  const u: LocalUser = { id: newId(), username, email, password, avatar_url: null, booking_alerts_enabled: true, preferred_language: 'en' }
+  const u: LocalUser = {
+    id: newId(), username, email, password, avatar_url: null, booking_alerts_enabled: true, preferred_language: 'en',
+    settings_mode: 'basic', feature_ai_email: false, feature_ai_suggest: false,
+    forwarding_token: ensureForwardingToken(), award_alerts_enabled: true,
+    preferred_booking_apps: ['roame', 'google_flights'], google_places_connected: false,
+  }
   d.users.push(u); d.sessionUserId = u.id; save(d); return strip(u)
 }
 export async function requestPasswordReset(identifier: string): Promise<void> {
@@ -125,15 +159,28 @@ export async function updateProfile(profile: Profile, patch: Partial<Profile> & 
       avatar_url: patch.avatar_url !== undefined ? patch.avatar_url : profile.avatar_url,
       booking_alerts_enabled: patch.booking_alerts_enabled !== undefined ? patch.booking_alerts_enabled : profile.booking_alerts_enabled !== false,
       preferred_language: patch.preferred_language ?? profile.preferred_language ?? 'en',
+      settings_mode: patch.settings_mode ?? profile.settings_mode ?? 'basic',
+      feature_ai_email: patch.feature_ai_email !== undefined ? patch.feature_ai_email : Boolean(profile.feature_ai_email),
+      feature_ai_suggest: patch.feature_ai_suggest !== undefined ? patch.feature_ai_suggest : Boolean(profile.feature_ai_suggest),
+      forwarding_token: patch.forwarding_token !== undefined ? patch.forwarding_token : profile.forwarding_token ?? null,
+      award_alerts_enabled: patch.award_alerts_enabled !== undefined ? patch.award_alerts_enabled : profile.award_alerts_enabled !== false,
+      preferred_booking_apps: patch.preferred_booking_apps ?? profile.preferred_booking_apps ?? ['roame', 'google_flights'],
+      google_places_connected: patch.google_places_connected !== undefined ? patch.google_places_connected : Boolean(profile.google_places_connected),
     }
     const { data, error } = await supabase.from('profiles').update(full).eq('id', profile.id).select().single()
     if (error) {
-      if (/booking_alerts|preferred_language/i.test(error.message)) {
-        const { booking_alerts_enabled, preferred_language, ...rest } = full
+      if (/booking_alerts|preferred_language|settings_mode|feature_ai|forwarding|award_|preferred_booking|google_places/i.test(error.message)) {
+        const {
+          booking_alerts_enabled, preferred_language, settings_mode, feature_ai_email, feature_ai_suggest,
+          forwarding_token, award_alerts_enabled, preferred_booking_apps, google_places_connected, ...rest
+        } = full
         const retry = await supabase.from('profiles').update(rest).eq('id', profile.id).select().single()
         if (retry.error) throw new Error(retry.error.message)
         console.warn('Profile prefs columns missing — run the latest supabase/schema.sql')
-        return normalizeProfile({ ...retry.data, booking_alerts_enabled, preferred_language })!
+        return normalizeProfile({
+          ...retry.data, booking_alerts_enabled, preferred_language, settings_mode, feature_ai_email,
+          feature_ai_suggest, forwarding_token, award_alerts_enabled, preferred_booking_apps, google_places_connected,
+        })!
       }
       throw new Error(error.message)
     }
@@ -147,9 +194,21 @@ export async function updateProfile(profile: Profile, patch: Partial<Profile> & 
     avatar_url: patch.avatar_url !== undefined ? patch.avatar_url : u.avatar_url,
     booking_alerts_enabled: patch.booking_alerts_enabled !== undefined ? patch.booking_alerts_enabled : u.booking_alerts_enabled !== false,
     preferred_language: patch.preferred_language ?? u.preferred_language ?? 'en',
+    settings_mode: patch.settings_mode ?? u.settings_mode ?? 'basic',
+    feature_ai_email: patch.feature_ai_email !== undefined ? patch.feature_ai_email : Boolean(u.feature_ai_email),
+    feature_ai_suggest: patch.feature_ai_suggest !== undefined ? patch.feature_ai_suggest : Boolean(u.feature_ai_suggest),
+    forwarding_token: patch.forwarding_token !== undefined ? patch.forwarding_token : u.forwarding_token ?? ensureForwardingToken(),
+    award_alerts_enabled: patch.award_alerts_enabled !== undefined ? patch.award_alerts_enabled : u.award_alerts_enabled !== false,
+    preferred_booking_apps: patch.preferred_booking_apps ?? u.preferred_booking_apps ?? ['roame', 'google_flights'],
+    google_places_connected: patch.google_places_connected !== undefined ? patch.google_places_connected : Boolean(u.google_places_connected),
   })
   if (patch.newPassword) u.password = patch.newPassword
   save(d); return strip(u)
+}
+
+/** Regenerate the plus-address forwarding token used for booking emails. */
+export async function regenerateForwardingToken(profile: Profile): Promise<Profile> {
+  return updateProfile(profile, { forwarding_token: ensureForwardingToken() })
 }
 const fileToDataUrl = (file: File) => new Promise<string>((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result as string); r.onerror = rej; r.readAsDataURL(file) })
 export async function uploadAvatar(profile: Profile, file: File): Promise<string> {
@@ -164,7 +223,21 @@ export async function uploadAvatar(profile: Profile, file: File): Promise<string
 
 // ---------- Trips / Items ----------
 export async function listTrips(userId: string): Promise<Trip[]> {
-  if (isSupabaseConfigured && supabase) { const { data } = await supabase.from('trips').select('*').eq('user_id', userId).order('start_date'); return data ?? [] }
+  if (isSupabaseConfigured && supabase) {
+    const { data: owned } = await supabase.from('trips').select('*').eq('user_id', userId).order('start_date')
+    let collab: Trip[] = []
+    try {
+      const { data: links } = await supabase.from('trip_collaborators').select('trip_id').eq('user_id', userId)
+      const ids = (links ?? []).map(l => l.trip_id).filter(Boolean)
+      if (ids.length) {
+        const { data } = await supabase.from('trips').select('*').in('id', ids)
+        collab = data ?? []
+      }
+    } catch { /* table may not exist yet */ }
+    const map = new Map<string, Trip>()
+    for (const t of [...(owned ?? []), ...collab]) map.set(t.id, t)
+    return [...map.values()].sort((a, b) => (a.start_date || '').localeCompare(b.start_date || ''))
+  }
   return load().trips.filter(t => t.user_id === userId).sort((a, b) => a.start_date.localeCompare(b.start_date))
 }
 export async function getTrip(id: string): Promise<Trip | null> {

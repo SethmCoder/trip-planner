@@ -2,6 +2,8 @@ export type BookingStatus = 'not_booked' | 'partially_booked' | 'booked'
 export type ItemType = 'transit' | 'hotel' | 'activity' | 'restaurant'
 export type DisplayLanguage = 'en' | 'es' | 'fr' | 'de' | 'ja' | 'ko' | 'zh-CN' | 'pt' | 'it'
 
+export type SettingsMode = 'basic' | 'advanced'
+
 export interface Profile {
   id: string
   username: string
@@ -11,6 +13,20 @@ export interface Profile {
   booking_alerts_enabled?: boolean
   /** Language used to display place / item names. */
   preferred_language?: DisplayLanguage | string
+  /** Settings panel: Basic vs Advanced (AI/Gmail). */
+  settings_mode?: SettingsMode
+  /** Advanced: process forwarded booking emails with AI. */
+  feature_ai_email?: boolean
+  /** Advanced: show Suggest New Stops on trip pages. */
+  feature_ai_suggest?: boolean
+  /** Unique plus-address token for booking@…+token@gmail.com */
+  forwarding_token?: string | null
+  /** Notify when overnight award search finds a viable flight. */
+  award_alerts_enabled?: boolean
+  /** Preferred award booking apps (e.g. roame, google_flights). */
+  preferred_booking_apps?: string[]
+  /** Google OAuth refresh for Saved Places import (server-side only; client may see connected flag). */
+  google_places_connected?: boolean
 }
 
 export interface AppNotification {
@@ -49,6 +65,68 @@ export interface ItineraryItem {
   from_name: string; from_lat: number | null; from_lng: number | null; to_name: string; to_lat: number | null; to_lng: number | null
   start_at: string; end_at: string; duration_minutes: number | null; mode_of_transport: string
   booking_status: BookingStatus; booking_open_date: string; book_by_date: string; image_url: string; sort_order: number; created_at: string
+  confirmation_code?: string | null
+  booking_source?: string | null
+  source_email_id?: string | null
+}
+
+export type FriendshipStatus = 'pending' | 'accepted' | 'declined'
+export interface Friendship {
+  id: string
+  requester_id: string
+  addressee_id: string
+  status: FriendshipStatus
+  created_at: string
+  /** Joined for UI */
+  other_username?: string
+  other_avatar_url?: string | null
+}
+
+export interface TripCollaborator {
+  id: string
+  trip_id: string
+  user_id: string
+  role: 'editor' | 'viewer'
+  created_at: string
+  username?: string
+}
+
+export interface ItinerarySuggestion {
+  id: string
+  trip_id: string
+  user_id: string
+  title: string
+  place_name: string
+  lat: number | null
+  lng: number | null
+  type: 'restaurant' | 'activity'
+  suggested_start: string
+  reason: string
+  status: 'suggested' | 'added' | 'dismissed'
+  created_at: string
+}
+
+export interface AwardSearch {
+  id: string
+  user_id: string
+  origin: string
+  destination: string
+  date_start: string
+  date_end: string
+  time_pref: string
+  points_min: number
+  points_max: number
+  preferred_airline: string
+  cabin: string
+  seats: number
+  booking_app: string
+  active: boolean
+  notify: boolean
+  best_summary: string | null
+  best_points: number | null
+  best_url: string | null
+  created_at: string
+  updated_at: string
 }
 /** User bookmark of a map/search place (persisted in localStorage or Supabase). */
 export interface SavedPlace {

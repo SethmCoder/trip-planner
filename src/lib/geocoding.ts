@@ -1,4 +1,5 @@
 import { placePrimary, placeSecondary, shortAddress } from './formatPlace'
+import { googlePlacesSearch, isGoogleMapsEnabled } from './googleConfig'
 
 export interface GeoResult {
   name: string
@@ -19,6 +20,27 @@ export async function searchPlaces(q: string, opts: SearchPlacesOpts = {}): Prom
   const query = q.trim()
   if (!query) return []
   const limit = opts.limit ?? 7
+
+  if (isGoogleMapsEnabled()) {
+    try {
+      const near = opts.near ? { lat: opts.near.lat, lng: opts.near.lng } : undefined
+      const google = await googlePlacesSearch(query, near)
+      if (google.length) {
+        return dedupeResults(
+          google.slice(0, limit).map(g => ({
+            name: g.name,
+            display: g.address ? `${g.name}, ${g.address}` : g.name,
+            detail: g.address,
+            lat: g.lat,
+            lng: g.lng,
+          })),
+        )
+      }
+    } catch {
+      /* fall through to Nominatim */
+    }
+  }
+
   try {
     const params = new URLSearchParams({
       format: 'json',

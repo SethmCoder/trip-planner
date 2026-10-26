@@ -9,7 +9,8 @@ import { useAuth } from '../context/AuthContext'
 import * as api from '../lib/data'
 import { searchPlaces, type GeoResult } from '../lib/geocoding'
 import { bookingLink, discoveryLinks } from '../lib/bookingLinks'
-import { newId, fmtDate, type Trip, type ItineraryItem, type SavedPlace } from '../lib/types'
+import { newId, fmtDate, type Trip, type ItineraryItem, type SavedPlace, type ItinerarySuggestion } from '../lib/types'
+import { listSuggestions, requestSuggestStops, updateSuggestionStatus } from '../lib/aiClient'
 import { calculateTransitMinutes, formatTransitTime, isFlight, addMinutes, getQuickestRoute, estimateGapTravel, formatCompactDuration, haversineKm, type LatLng, type GapTravel } from '../lib/routing'
 import { buildPinPopup, categoryFromItemType, emojiForKind, fetchExperiences, fetchHotelsNearby, poiMeta, type MapPoi } from '../lib/pois'
 import { resolvePlaceImage, resolveTripImage } from '../lib/tripImages'
@@ -237,9 +238,13 @@ export default function TripPage() {
   const [savedPlaces, setSavedPlaces] = useState<SavedPlace[]>([])
   const [saveMsg, setSaveMsg] = useState('')
   const [dismissedSuggestions, setDismissedSuggestions] = useState<string[]>([])
+  const [aiSuggestions, setAiSuggestions] = useState<ItinerarySuggestion[]>([])
+  const [aiSuggestLoading, setAiSuggestLoading] = useState(false)
+  const [aiSuggestErr, setAiSuggestErr] = useState('')
 
   useEffect(() => {
     if (id) {
+      listSuggestions(id).then(setAiSuggestions).catch(() => {})
       api.getTrip(id).then(async t => {
         setTrip(t)
         if (t) {
@@ -936,6 +941,60 @@ export default function TripPage() {
     })
   }
 
+  const runAiSuggest = async () => {
+    if (!id || !profile) return
+    setAiSuggestErr('')
+    setAiSuggestLoading(true)
+    try {
+      const rows = await requestSuggestStops(id)
+      setAiSuggestions(rows.filter(r => r.status === 'suggested'))
+    } catch (e: any) {
+      setAiSuggestErr(e.message || 'Could not suggest stops')
+    } finally {
+      setAiSuggestLoading(false)
+    }
+  }
+
+  const addAiSuggestion = async (s: ItinerarySuggestion) => {
+    if (!trip || !profile) return
+    // Hard rule: only restaurant / activity — never hotels or flights
+    const type = s.type === 'restaurant' ? 'restaurant' : 'activity'
+    const start = s.suggested_start || (trip.start_date ? `${trip.start_date}T12:00` : '')
+    const item: ItineraryItem = {
+      id: newId(),
+      trip_id: trip.id,
+      user_id: profile.id,
+      type,
+      group_id: null,
+      subtype: null,
+      title: s.title,
+      place_name: s.place_name || s.title,
+      lat: s.lat,
+      lng: s.lng,
+      from_name: '', from_lat: null, from_lng: null,
+      to_name: '', to_lat: null, to_lng: null,
+      start_at: start,
+      end_at: start,
+      duration_minutes: type === 'restaurant' ? 90 : 120,
+      mode_of_transport: '',
+      booking_status: 'not_booked',
+      booking_open_date: '',
+      book_by_date: '',
+      image_url: '',
+      sort_order: items.length,
+      created_at: new Date().toISOString(),
+    }
+    const saved = await api.saveItem(item)
+    setItems(prev => [...prev, saved])
+    await updateSuggestionStatus(s.id, 'added')
+    setAiSuggestions(prev => prev.filter(x => x.id !== s.id))
+  }
+
+  const dismissAiSuggestion = async (s: ItinerarySuggestion) => {
+    await updateSuggestionStatus(s.id, 'dismissed')
+    setAiSuggestions(prev => prev.filter(x => x.id !== s.id))
+  }
+
   const addSuggestedSavedPlace = async (place: SavedPlace, when: string) => {
     const cat = (place.category || 'other').toLowerCase()
     const type: ItineraryItem['type'] =
@@ -1197,7 +1256,7 @@ export default function TripPage() {
     <aside className="panel trip-create-sidebar">
       <button className="btn-outline btn-small" onClick={() => nav('/')}>← All Trips</button>
       <button className="btn-outline btn-small" onClick={deleteThisTrip} style={{ marginLeft: 8, color: '#c00', borderColor: '#c00' }}>Delete Trip</button>
-      <h3 style={{ fontFamily: "'Courier New',monospace" }}>Create Items</h3>
+      <h3 style={{ marginTop: 0, color: 'var(--slate-800)' }}>Create Items</h3>
       {saveMsg && <p className="saved-toast">{saveMsg}</p>}
 
       <div style={{ borderTop: '2px solid var(--orange)', paddingTop: 6 }}>
@@ -1538,6 +1597,30 @@ export default function TripPage() {
               </span>
             </label>
           </div>
+          {profile?.feature_ai_suggest && (
+            <div className="ai-suggest-block">
+              <div className="ai-suggest-header">
+                <h4>Suggest New Stops</h4>
+                <button type="button" className="btn-orange" disabled={aiSuggestLoading} onClick={runAiSuggest}>
+                  {aiSuggestLoading ? 'Suggesting…' : 'Suggest New Stops'}
+                </button>
+              </div>
+              <p className="places-hint" style={{ margin: 0 }}>
+                Fills free-time gaps with restaurants and activities. Hotels and flights are never moved or deleted.
+              </p>
+              {aiSuggestErr && <div className="error" style={{ marginTop: 8 }}>{aiSuggestErr}</div>}
+              {aiSuggestions.map(s => (
+                <div key={s.id} className="ai-suggest-card">
+                  <strong>{s.title}</strong>
+                  <p>{s.reason || s.place_name}</p>
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <button type="button" className="btn-orange" onClick={() => addAiSuggestion(s)}>Add</button>
+                    <button type="button" className="btn-ghost" onClick={() => dismissAiSuggestion(s)}>Dismiss</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
           <p className="places-hint">
             Drag to reorder. <b>All days</b> shows every day’s route in its own color; click a day to focus it.
             Change walking/driving/train between stops with the dropdown on the connector.

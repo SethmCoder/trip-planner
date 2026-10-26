@@ -59,6 +59,20 @@ export default function TopBar() {
         {centerCopy}
       </div>
       <div ref={ref} style={{ position: 'relative', display: 'flex', alignItems: 'center', gap: 8 }}>
+        <button
+          type="button"
+          className="topbar-icon-btn"
+          title="Friends"
+          aria-label="Friends"
+          onClick={() => nav('/friends')}
+        >
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden>
+            <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
+            <circle cx="9" cy="7" r="4" />
+            <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
+            <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+          </svg>
+        </button>
         <NotificationBell />
         <button
           type="button"
@@ -77,6 +91,8 @@ export default function TopBar() {
           <div className="topbar-menu" role="menu">
             <button type="button" role="menuitem" onClick={() => { setOpen(false); nav('/') }}>Main Page</button>
             <button type="button" role="menuitem" onClick={() => { setOpen(false); nav('/saved') }}>Saved Places</button>
+            <button type="button" role="menuitem" onClick={() => { setOpen(false); nav('/flights') }}>Award Flights</button>
+            <button type="button" role="menuitem" onClick={() => { setOpen(false); nav('/friends') }}>Friends</button>
             <button type="button" role="menuitem" onClick={() => { setOpen(false); nav('/settings') }}>Settings</button>
             <button type="button" role="menuitem" onClick={async () => { await logout(); nav('/login') }}>Logout</button>
           </div>

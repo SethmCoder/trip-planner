@@ -137,3 +137,197 @@ drop policy if exists "avatar read" on storage.objects;
 create policy "avatar read" on storage.objects for select using (bucket_id='avatars');
 drop policy if exists "avatar write own" on storage.objects;
 create policy "avatar write own" on storage.objects for all using (bucket_id='avatars' and auth.uid()::text = (storage.foldername(name))[1]) with check (bucket_id='avatars' and auth.uid()::text = (storage.foldername(name))[1]);
+
+-- ========== AI / Social / Award Flights expansion ==========
+alter table public.profiles add column if not exists settings_mode text not null default 'basic';
+alter table public.profiles add column if not exists feature_ai_email boolean not null default false;
+alter table public.profiles add column if not exists feature_ai_suggest boolean not null default false;
+alter table public.profiles add column if not exists forwarding_token text unique;
+alter table public.profiles add column if not exists award_alerts_enabled boolean not null default true;
+alter table public.profiles add column if not exists preferred_booking_apps jsonb not null default '["roame","google_flights"]'::jsonb;
+alter table public.profiles add column if not exists google_places_connected boolean not null default false;
+
+alter table public.itinerary_items add column if not exists confirmation_code text;
+alter table public.itinerary_items add column if not exists booking_source text;
+alter table public.itinerary_items add column if not exists source_email_id uuid;
+
+create table if not exists public.inbound_emails (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references public.profiles(id) on delete cascade,
+  gmail_message_id text not null,
+  subject text not null default '',
+  from_addr text not null default '',
+  received_at timestamptz,
+  redacted_body text not null default '',
+  status text not null default 'pending',
+  error text,
+  created_at timestamptz not null default now(),
+  unique (gmail_message_id)
+);
+create index if not exists idx_inbound_emails_user on public.inbound_emails(user_id, created_at desc);
+
+create table if not exists public.booking_email_matches (
+  id uuid primary key default gen_random_uuid(),
+  inbound_email_id uuid not null references public.inbound_emails(id) on delete cascade,
+  item_id uuid references public.itinerary_items(id) on delete set null,
+  trip_id uuid references public.trips(id) on delete set null,
+  confidence double precision not null default 0,
+  action text not null default 'none',
+  extracted jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now()
+);
+
+create table if not exists public.itinerary_suggestions (
+  id uuid primary key default gen_random_uuid(),
+  trip_id uuid not null references public.trips(id) on delete cascade,
+  user_id uuid not null references public.profiles(id) on delete cascade,
+  title text not null default '',
+  place_name text not null default '',
+  lat double precision, lng double precision,
+  type text not null default 'activity',
+  suggested_start timestamptz,
+  reason text not null default '',
+  status text not null default 'suggested',
+  created_at timestamptz not null default now()
+);
+create index if not exists idx_suggestions_trip on public.itinerary_suggestions(trip_id, status);
+
+create table if not exists public.friendships (
+  id uuid primary key default gen_random_uuid(),
+  requester_id uuid not null references public.profiles(id) on delete cascade,
+  addressee_id uuid not null references public.profiles(id) on delete cascade,
+  status text not null default 'pending',
+  created_at timestamptz not null default now(),
+  unique (requester_id, addressee_id),
+  check (requester_id <> addressee_id)
+);
+create index if not exists idx_friendships_users on public.friendships(requester_id, addressee_id, status);
+
+create table if not exists public.trip_collaborators (
+  id uuid primary key default gen_random_uuid(),
+  trip_id uuid not null references public.trips(id) on delete cascade,
+  user_id uuid not null references public.profiles(id) on delete cascade,
+  role text not null default 'editor',
+  created_at timestamptz not null default now(),
+  unique (trip_id, user_id)
+);
+create index if not exists idx_trip_collab_user on public.trip_collaborators(user_id);
+
+create table if not exists public.shared_saved_places (
+  id uuid primary key default gen_random_uuid(),
+  place_id uuid not null references public.saved_places(id) on delete cascade,
+  owner_id uuid not null references public.profiles(id) on delete cascade,
+  shared_with_id uuid not null references public.profiles(id) on delete cascade,
+  created_at timestamptz not null default now(),
+  unique (place_id, shared_with_id)
+);
+
+create table if not exists public.award_searches (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references public.profiles(id) on delete cascade,
+  origin text not null default '',
+  destination text not null default '',
+  date_start date,
+  date_end date,
+  time_pref text not null default 'any',
+  points_min int not null default 0,
+  points_max int not null default 200000,
+  preferred_airline text not null default '',
+  cabin text not null default 'economy',
+  seats int not null default 1,
+  booking_app text not null default 'roame',
+  active boolean not null default true,
+  notify boolean not null default true,
+  best_summary text,
+  best_points int,
+  best_url text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+create index if not exists idx_award_searches_user on public.award_searches(user_id, active);
+
+create table if not exists public.award_results (
+  id uuid primary key default gen_random_uuid(),
+  search_id uuid not null references public.award_searches(id) on delete cascade,
+  summary text not null default '',
+  points int,
+  airline text,
+  cabin text,
+  depart_at timestamptz,
+  deep_link text,
+  raw jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now()
+);
+create index if not exists idx_award_results_search on public.award_results(search_id, created_at desc);
+
+alter table public.inbound_emails enable row level security;
+alter table public.booking_email_matches enable row level security;
+alter table public.itinerary_suggestions enable row level security;
+alter table public.friendships enable row level security;
+alter table public.trip_collaborators enable row level security;
+alter table public.shared_saved_places enable row level security;
+alter table public.award_searches enable row level security;
+alter table public.award_results enable row level security;
+
+drop policy if exists "own inbound emails" on public.inbound_emails;
+create policy "own inbound emails" on public.inbound_emails for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
+drop policy if exists "own email matches" on public.booking_email_matches;
+create policy "own email matches" on public.booking_email_matches for select using (
+  exists (select 1 from public.inbound_emails e where e.id = inbound_email_id and e.user_id = auth.uid())
+);
+drop policy if exists "own suggestions" on public.itinerary_suggestions;
+create policy "own suggestions" on public.itinerary_suggestions for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
+drop policy if exists "own friendships" on public.friendships;
+create policy "own friendships" on public.friendships for all using (auth.uid() = requester_id or auth.uid() = addressee_id)
+  with check (auth.uid() = requester_id or auth.uid() = addressee_id);
+drop policy if exists "trip collab read" on public.trip_collaborators;
+create policy "trip collab read" on public.trip_collaborators for select using (
+  auth.uid() = user_id or exists (select 1 from public.trips t where t.id = trip_id and t.user_id = auth.uid())
+);
+drop policy if exists "trip collab write owner" on public.trip_collaborators;
+create policy "trip collab write owner" on public.trip_collaborators for all using (
+  exists (select 1 from public.trips t where t.id = trip_id and t.user_id = auth.uid())
+) with check (
+  exists (select 1 from public.trips t where t.id = trip_id and t.user_id = auth.uid())
+);
+drop policy if exists "shared places" on public.shared_saved_places;
+create policy "shared places" on public.shared_saved_places for all using (auth.uid() = owner_id or auth.uid() = shared_with_id)
+  with check (auth.uid() = owner_id);
+drop policy if exists "own award searches" on public.award_searches;
+create policy "own award searches" on public.award_searches for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
+drop policy if exists "own award results" on public.award_results;
+create policy "own award results" on public.award_results for all using (
+  exists (select 1 from public.award_searches s where s.id = search_id and s.user_id = auth.uid())
+) with check (
+  exists (select 1 from public.award_searches s where s.id = search_id and s.user_id = auth.uid())
+);
+
+-- Collaborators can read/edit trips they are invited to
+drop policy if exists "own trips" on public.trips;
+create policy "own trips" on public.trips for all using (
+  auth.uid() = user_id
+  or exists (select 1 from public.trip_collaborators c where c.trip_id = id and c.user_id = auth.uid())
+) with check (
+  auth.uid() = user_id
+  or exists (select 1 from public.trip_collaborators c where c.trip_id = id and c.user_id = auth.uid() and c.role = 'editor')
+);
+drop policy if exists "own items" on public.itinerary_items;
+create policy "own items" on public.itinerary_items for all using (
+  auth.uid() = user_id
+  or exists (select 1 from public.trip_collaborators c where c.trip_id = trip_id and c.user_id = auth.uid())
+) with check (
+  auth.uid() = user_id
+  or exists (select 1 from public.trip_collaborators c where c.trip_id = trip_id and c.user_id = auth.uid() and c.role = 'editor')
+);
+
+insert into storage.buckets (id, name, public) values ('inbound-emails','inbound-emails',false) on conflict (id) do nothing;
+drop policy if exists "inbound email own" on storage.objects;
+create policy "inbound email own" on storage.objects for all using (
+  bucket_id = 'inbound-emails' and auth.uid()::text = (storage.foldername(name))[1]
+) with check (
+  bucket_id = 'inbound-emails' and auth.uid()::text = (storage.foldername(name))[1]
+);
+
+-- Ensure every profile has a forwarding token
+update public.profiles set forwarding_token = replace(gen_random_uuid()::text, '-', '')
+where forwarding_token is null;

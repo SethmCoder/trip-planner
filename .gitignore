@@ -4,6 +4,7 @@ dist
 .env
 .env.local
 .env.*.local
+secrets.fill-me.env
 *.log
 .DS_Store
 tsconfig.tsbuildinfo

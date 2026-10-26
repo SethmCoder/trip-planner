@@ -8,16 +8,18 @@ import { placePrimary, placeSecondary, shortAddress } from '../lib/formatPlace'
 import TranslatedText from '../components/TranslatedText'
 import { emojiForKind, poiMeta } from '../lib/pois'
 import { googleMapsUrl } from '../lib/maps'
+import { isGoogleMapsEnabled } from '../lib/googleConfig'
 import { newId, type SavedPlace } from '../lib/types'
 
 export default function SavedPlacesPage() {
-  const { profile } = useAuth()
+  const { profile, setProfile } = useAuth()
   const [places, setPlaces] = useState<SavedPlace[]>([])
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [q, setQ] = useState('')
   const [results, setResults] = useState<GeoResult[]>([])
   const [searching, setSearching] = useState(false)
   const [msg, setMsg] = useState('')
+  const googleOn = isGoogleMapsEnabled()
 
   useEffect(() => {
     if (!profile) return
@@ -100,8 +102,32 @@ export default function SavedPlacesPage() {
         <aside className="saved-sidebar" aria-label="Saved places">
           <div className="saved-sidebar-header">
             <h2>Saved Places</h2>
-            <p>Search a place or save pins from trip maps. Open any place in Google Maps.</p>
+            <p>
+              Search a place or save pins from trip maps. Open any place in Google Maps.
+              {googleOn
+                ? ' Search uses Google Places (API key detected).'
+                : ' Search uses OpenStreetMap until VITE_GOOGLE_MAPS_API_KEY is set.'}
+            </p>
           </div>
+
+          {googleOn && profile && (
+            <div className="panel" style={{ margin: '0 0 12px', padding: 12 }}>
+              <p className="places-hint" style={{ marginTop: 0 }}>
+                Optional: mark Google account connected for Saved Places import workflows (OAuth tokens stay server-side).
+              </p>
+              <button
+                type="button"
+                className="btn-ghost"
+                onClick={async () => {
+                  const next = await api.updateProfile(profile, { google_places_connected: !profile.google_places_connected })
+                  setProfile(next)
+                  setMsg(next.google_places_connected ? 'Google marked connected' : 'Google disconnected')
+                }}
+              >
+                {profile.google_places_connected ? 'Disconnect Google' : 'Connect Google account'}
+              </button>
+            </div>
+          )}
 
           <div className="saved-search">
             <label htmlFor="saved-search-input">Add by search</label>
