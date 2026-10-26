@@ -1,4 +1,5 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
+import { Analytics } from '@vercel/analytics/react'
 import { AuthProvider, useAuth } from './context/AuthContext'
 import LoginPage from './pages/LoginPage'
 import CreateAccountPage from './pages/CreateAccountPage'
@@ -13,4 +14,4 @@ export default function App() { return <AuthProvider><ErrorBoundary><BrowserRout
   <Route path="/login" element={<LoginPage />} /><Route path="/create-account" element={<CreateAccountPage />} /><Route path="/reset-password" element={<ResetPasswordPage />} />
   <Route path="/" element={<Protected><MainPage /></Protected>} /><Route path="/trip/:id" element={<Protected><TripPage /></Protected>} /><Route path="/saved" element={<Protected><SavedPlacesPage /></Protected>} /><Route path="/settings" element={<Protected><SettingsPage /></Protected>} />
   <Route path="*" element={<Navigate to="/" replace />} />
-</Routes></BrowserRouter></ErrorBoundary></AuthProvider> }
+</Routes></BrowserRouter></ErrorBoundary><Analytics /></AuthProvider> }
