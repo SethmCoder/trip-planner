@@ -18,7 +18,7 @@ import { shortAddress, placePrimary, placeSecondary, hotelStayTitle, hotelPhase 
 import { dayColor, TRANSIT_MODES, GAP_MODES } from '../lib/transportModes'
 import { lookupFlights, type FlightOption } from '../lib/flights'
 import { isImageFile, ocrFlightScreenshot, type ParsedFlightScreenshot } from '../lib/flightScreenshot'
-import type { AirportRef } from '../lib/airports'
+import { airportByIata, type AirportRef } from '../lib/airports'
 import DestinationThumb from '../components/DestinationThumb'
 import TranslatedText from '../components/TranslatedText'
 
@@ -95,17 +95,31 @@ function PlaceSearch({
   near,
   placeholder = 'Type a short place name…',
   onHover,
+  value = null,
 }: {
   label: string
   onPick: (r: GeoResult) => void
   near?: { lat: number; lng: number } | null
   placeholder?: string
   onHover?: (r: GeoResult | null) => void
+  /** Controlled selection (e.g. filled from a flight screenshot). */
+  value?: GeoResult | null
 }) {
   const [q, setQ] = useState('')
   const [res, setRes] = useState<GeoResult[]>([])
   const [picked, setPicked] = useState('')
   const [searching, setSearching] = useState(false)
+
+  // Keep the input in sync when parent sets From/To (screenshot OCR, flight estimate, etc.)
+  useEffect(() => {
+    if (value?.name) {
+      setPicked(value.name)
+      setQ('')
+      setRes([])
+    } else if (value === null) {
+      // only clear when explicitly nullled — ignore undefined for uncontrolled uses
+    }
+  }, [value?.name, value?.lat, value?.lng])
 
   useEffect(() => {
     if (picked || q.trim().length < 2) {
@@ -528,19 +542,24 @@ export default function TripPage() {
     setMode('Airplane')
     setFlightOptions([])
     setFlightStatus('idle')
-    if (parsed.depAirport) setFrom(geoFromAirport(parsed.depAirport))
-    if (parsed.arrAirport) setTo(geoFromAirport(parsed.arrAirport))
+    const dep = parsed.depAirport || airportByIata(parsed.depIata)
+    const arr = parsed.arrAirport || airportByIata(parsed.arrIata)
+    if (dep) setFrom(geoFromAirport(dep))
+    if (arr) setTo(geoFromAirport(arr))
     if (parsed.departure) setTStart(parsed.departure)
     if (parsed.arrival) setTEnd(parsed.arrival)
     const bits: string[] = []
-    if (parsed.depIata && parsed.arrIata) bits.push(`${parsed.depIata} → ${parsed.arrIata}`)
+    if (dep && arr) bits.push(`${dep.iata} → ${arr.iata}`)
+    else if (parsed.depIata || parsed.arrIata) bits.push(`${parsed.depIata || '?'} → ${parsed.arrIata || '?'}`)
     if (parsed.departure) bits.push(`dep ${parsed.departure.replace('T', ' ')}`)
     if (parsed.arrival) bits.push(`arr ${parsed.arrival.replace('T', ' ')}`)
     if (parsed.durationMinutes != null) bits.push(`${formatTransitTime(parsed.durationMinutes, 'Airplane')} block`)
-    if (parsed.confidence < 0.5) {
+    if (!dep || !arr) {
+      setShotMsg('Read times from the screenshot, but could not fill From/To — check airport codes on the card.')
+    } else if (parsed.confidence < 0.5) {
       setShotMsg('Could only read part of the screenshot — check From/To and times.')
     } else {
-      setShotMsg(bits.length ? `Filled from screenshot: ${bits.join(' · ')}` : 'Screenshot read, but no flight fields matched.')
+      setShotMsg(bits.length ? `Filled From/To and times: ${bits.join(' · ')}` : 'Screenshot read, but no flight fields matched.')
     }
   }
 
@@ -1182,8 +1201,20 @@ export default function TripPage() {
 
       <div style={{ borderTop: '2px solid var(--orange)', paddingTop: 6 }}>
         <h4>Transit</h4>
-        <PlaceSearch label="From" onPick={r => { setFrom(r); setFlightOptions([]); setFlightStatus('idle') }} near={near} placeholder="Airport, station…" />
-        <PlaceSearch label="To" onPick={r => { setTo(r); setFlightOptions([]); setFlightStatus('idle') }} near={near} placeholder="Airport, station…" />
+        <PlaceSearch
+          label="From"
+          value={from}
+          onPick={r => { setFrom(r); setFlightOptions([]); setFlightStatus('idle') }}
+          near={near}
+          placeholder="Airport, station…"
+        />
+        <PlaceSearch
+          label="To"
+          value={to}
+          onPick={r => { setTo(r); setFlightOptions([]); setFlightStatus('idle') }}
+          near={near}
+          placeholder="Airport, station…"
+        />
         <label htmlFor="transit-mode">Mode of transportation</label>
         <select id="transit-mode" value={mode} onChange={e => { setMode(e.target.value); setFlightOptions([]); setFlightStatus('idle') }}>
           {TRANSIT_MODES.map(m => (
