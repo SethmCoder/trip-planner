@@ -1,7 +1,9 @@
-/** Nearby points of interest via free OpenStreetMap Overpass mirrors (no paid keys). */
+/** Nearby points of interest via free OpenStreetMap Overpass mirrors (no paid keys),
+ *  or Google Places when VITE_GOOGLE_MAPS_API_KEY is set. */
 
 import { poiTravelLinks } from './travelApps'
 import { googleMapsUrl } from './maps'
+import { googleNearbyPois, isGoogleMapsEnabled } from './googleConfig'
 
 export type PoiCategory =
   | 'train_station'
@@ -431,15 +433,60 @@ async function nominatimFallback(bounds: {
   return out
 }
 
+const poiCache = new Map<string, { at: number; data: MapPoi[] }>()
+const CACHE_MS = 5 * 60 * 1000
+
+function cacheKey(kind: string, bounds: { south: number; west: number; north: number; east: number }, extra = '') {
+  const r = (n: number) => n.toFixed(3)
+  return `${kind}:${r(bounds.south)},${r(bounds.west)},${r(bounds.north)},${r(bounds.east)}:${extra}`
+}
+
+function getCached(key: string): MapPoi[] | null {
+  const hit = poiCache.get(key)
+  if (!hit) return null
+  if (Date.now() - hit.at > CACHE_MS) { poiCache.delete(key); return null }
+  return hit.data
+}
+
+function setCached(key: string, data: MapPoi[]) {
+  poiCache.set(key, { at: Date.now(), data })
+}
+
 export async function fetchNearbyPois(
   bounds: { south: number; west: number; north: number; east: number },
   opts?: { signal?: AbortSignal; experiencesOnly?: boolean; placeContext?: string; zoom?: number },
 ): Promise<MapPoi[]> {
-  const { south, west, north, east } = bounds
-  const bbox = `${south},${west},${north},${east}`
   const placeContext = opts?.placeContext ?? ''
   const zoom = opts?.zoom ?? 14
   const limit = poiLimitForZoom(zoom)
+  const key = cacheKey(opts?.experiencesOnly ? 'exp' : 'poi', bounds, `${zoom}:${placeContext}`)
+  const cached = getCached(key)
+  if (cached) return cached
+
+  const midLat = (bounds.south + bounds.north) / 2
+  const midLng = (bounds.west + bounds.east) / 2
+
+  if (isGoogleMapsEnabled()) {
+    try {
+      const type = opts?.experiencesOnly ? 'tourist_attraction' : 'tourist_attraction'
+      const google = await googleNearbyPois(midLat, midLng, type)
+      if (google.length) {
+        const mapped: MapPoi[] = google.slice(0, limit).map((g, i) => ({
+          id: g.placeId || `g-${i}`,
+          lat: g.lat,
+          lng: g.lng,
+          name: g.name,
+          category: opts?.experiencesOnly ? 'attraction' : 'attraction',
+          label: g.name,
+          score: 40 - i,
+        }))
+        setCached(key, mapped)
+        return mapped
+      }
+    } catch { /* fall through to OSM */ }
+  }
+
+  const bbox = `${bounds.south},${bounds.west},${bounds.north},${bounds.east}`
   const query = buildQuery(bbox, {
     experiencesOnly: opts?.experiencesOnly,
     zoom,
@@ -450,7 +497,9 @@ export async function fetchNearbyPois(
   if (elements.length === 0 && !opts?.experiencesOnly) {
     elements = await nominatimFallback(bounds, opts?.signal)
   }
-  return parseElements(elements, placeContext, limit)
+  const parsed = parseElements(elements, placeContext, limit)
+  setCached(key, parsed)
+  return parsed
 }
 
 export async function fetchExperiences(
@@ -504,12 +553,29 @@ export function buildPinPopup(opts: {
   ].join('')
 }
 
-/** Hotels near a destination (Overpass / Nominatim, free). */
+/** Hotels near a destination (Google Places if keyed, else Overpass / Nominatim). */
 export async function fetchHotelsNearby(
   bounds: { south: number; west: number; north: number; east: number },
   placeContext = '',
   signal?: AbortSignal,
 ): Promise<MapPoi[]> {
+  const key = cacheKey('hotels', bounds, placeContext)
+  const cached = getCached(key)
+  if (cached) return cached
+
+  const midLat = (bounds.south + bounds.north) / 2
+  const midLng = (bounds.west + bounds.east) / 2
+
+  if (isGoogleMapsEnabled()) {
+    try {
+      const list = await loadGoogleLodging(midLat, midLng)
+      if (list.length) {
+        setCached(key, list)
+        return list
+      }
+    } catch { /* fall through */ }
+  }
+
   const bbox = `${bounds.south},${bounds.west},${bounds.north},${bounds.east}`
   const query = `
 [out:json][timeout:20];
@@ -518,7 +584,44 @@ export async function fetchHotelsNearby(
 );
 out center 40;
 `
-  const elements = await postOverpass(query, signal)
-  const all = parseElements(elements, placeContext)
-  return all.filter(p => p.category === 'hotel').slice(0, 30)
+  let elements = await postOverpass(query, signal)
+  let all = parseElements(elements, placeContext).filter(p => p.category === 'hotel')
+  if (all.length === 0) {
+    elements = await nominatimFallback(bounds, signal)
+    all = parseElements(elements, placeContext).filter(p => p.category === 'hotel' || /hotel|inn|hostel/i.test(p.name))
+    all = all.map(p => ({ ...p, category: 'hotel' as PoiCategory }))
+  }
+  const sliced = all.slice(0, 30)
+  setCached(key, sliced)
+  return sliced
+}
+
+async function loadGoogleLodging(lat: number, lng: number): Promise<MapPoi[]> {
+  if (!isGoogleMapsEnabled()) return []
+  const { loadGoogleMapsScript } = await import('./googleConfig')
+  await loadGoogleMapsScript()
+  const g = (window as any).google
+  const service = new g.maps.places.PlacesService(document.createElement('div'))
+  return new Promise(resolve => {
+    service.nearbySearch(
+      { location: new g.maps.LatLng(lat, lng), radius: 3000, type: 'lodging' },
+      (results: any[] | null, status: string) => {
+        if (status !== g.maps.places.PlacesServiceStatus.OK || !results) {
+          resolve([])
+          return
+        }
+        resolve(
+          results.slice(0, 20).map((r, i) => ({
+            id: r.place_id || `hotel-g-${i}`,
+            lat: r.geometry?.location?.lat?.() ?? 0,
+            lng: r.geometry?.location?.lng?.() ?? 0,
+            name: r.name || 'Hotel',
+            category: 'hotel' as PoiCategory,
+            label: r.name || 'Hotel',
+            score: 35 - i,
+          })),
+        )
+      },
+    )
+  })
 }

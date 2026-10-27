@@ -9,7 +9,7 @@ import { useAuth } from '../context/AuthContext'
 import * as api from '../lib/data'
 import { searchPlaces, type GeoResult } from '../lib/geocoding'
 import { bookingLink, discoveryLinks } from '../lib/bookingLinks'
-import { newId, fmtDate, type Trip, type ItineraryItem, type SavedPlace, type ItinerarySuggestion } from '../lib/types'
+import { newId, fmtDate, type Trip, type ItineraryItem, type SavedPlace, type ItinerarySuggestion, type TripPerson } from '../lib/types'
 import { listSuggestions, requestSuggestStops, updateSuggestionStatus } from '../lib/aiClient'
 import { canUseAiSuggest, isAdvancedEnabled } from '../lib/advanced'
 import { calculateTransitMinutes, formatTransitTime, isFlight, addMinutes, getQuickestRoute, estimateGapTravel, formatCompactDuration, haversineKm, type LatLng, type GapTravel } from '../lib/routing'
@@ -20,9 +20,14 @@ import { shortAddress, placePrimary, placeSecondary, hotelStayTitle, hotelPhase 
 import { dayColor, TRANSIT_MODES, GAP_MODES } from '../lib/transportModes'
 import { lookupFlights, type FlightOption } from '../lib/flights'
 import { isImageFile, ocrFlightScreenshot, type ParsedFlightScreenshot } from '../lib/flightScreenshot'
-import { airportByIata, type AirportRef } from '../lib/airports'
+import { airportByIata, resolveAirport, type AirportRef } from '../lib/airports'
+
 import DestinationThumb from '../components/DestinationThumb'
 import TranslatedText from '../components/TranslatedText'
+import AvatarStack from '../components/AvatarStack'
+import * as social from '../lib/social'
+
+const LAST_ORIGIN_KEY = 'travel-log-last-flight-origin'
 
 function geoFromAirport(a: AirportRef): GeoResult {
   const label = `${a.city || a.name} (${a.iata})`
@@ -233,7 +238,11 @@ export default function TripPage() {
   const [rest, setRest] = useState<GeoResult | null>(null)
   const [rTime, setRTime] = useState('')
   const [mobilePanel, setMobilePanel] = useState<'create' | 'map' | 'places'>('map')
+  const [createTab, setCreateTab] = useState<'transit' | 'stay' | 'places'>('transit')
+  const [placeKind, setPlaceKind] = useState<'activity' | 'restaurant' | 'experience'>('experience')
   const [rightTab, setRightTab] = useState<'places' | 'experiences'>('places')
+  const majorStopsTimer = useRef<number | null>(null)
+  const flightPrefillDone = useRef(false)
   const [experiences, setExperiences] = useState<MapPoi[]>([])
   const [expStatus, setExpStatus] = useState<'idle' | 'loading' | 'ready' | 'empty' | 'need-place'>('idle')
   const [savedPlaces, setSavedPlaces] = useState<SavedPlace[]>([])
@@ -243,6 +252,7 @@ export default function TripPage() {
   const [aiSuggestLoading, setAiSuggestLoading] = useState(false)
   const [aiSuggestErr, setAiSuggestErr] = useState('')
   const [aiOrgNote, setAiOrgNote] = useState('')
+  const [tripPeople, setTripPeople] = useState<TripPerson[]>([])
 
   useEffect(() => {
     if (id) {
@@ -250,6 +260,7 @@ export default function TripPage() {
       api.getTrip(id).then(async t => {
         setTrip(t)
         if (t) {
+          social.listTripPeople(t).then(setTripPeople).catch(() => setTripPeople([]))
           setTStart(`${t.start_date}T09:00`)
           setTEnd(`${t.start_date}T11:00`)
           setHIn(`${t.start_date}T15:00`)
@@ -265,6 +276,8 @@ export default function TripPage() {
               try { await api.saveTrip(updated) } catch { /* schema may lack image_url */ }
             }
           }
+        } else {
+          setTripPeople([])
         }
       })
       api.listItems(id).then(setItems)
@@ -359,6 +372,17 @@ export default function TripPage() {
       if (rightTab === 'experiences' && trip && (trip.place_lat == null || trip.place_lng == null)) setExpStatus('need-place')
       return
     }
+    // Reuse create-sidebar experience fetch when available (shared cache underneath)
+    if (expPickStatus === 'ready' && expPicks.length) {
+      setExperiences(expPicks)
+      setExpStatus('ready')
+      return
+    }
+    if (expPickStatus === 'empty') {
+      setExperiences([])
+      setExpStatus('empty')
+      return
+    }
     let cancelled = false
     setExpStatus('loading')
     const pad = 0.12
@@ -373,7 +397,60 @@ export default function TripPage() {
       setExpStatus(list.length ? 'ready' : 'empty')
     })
     return () => { cancelled = true }
-  }, [rightTab, trip?.place_lat, trip?.place_lng, trip?.place])
+  }, [rightTab, trip?.place_lat, trip?.place_lng, trip?.place, expPicks, expPickStatus])
+
+  // Prefill flight From (last used) → To (trip destination airport)
+  useEffect(() => {
+    if (!trip || flightPrefillDone.current) return
+    flightPrefillDone.current = true
+    try {
+      const raw = localStorage.getItem(LAST_ORIGIN_KEY)
+      if (raw && !from) {
+        const parsed = JSON.parse(raw) as GeoResult
+        if (parsed?.lat != null && parsed?.lng != null) setFrom(parsed)
+      }
+    } catch { /* ignore */ }
+    if (!to && (trip.place || trip.place_lat != null)) {
+      const dest = resolveAirport(trip.place, trip.place_lat != null && trip.place_lng != null
+        ? { lat: trip.place_lat, lng: trip.place_lng }
+        : null)
+      if (dest) setTo(geoFromAirport(dest))
+    }
+  }, [trip?.id])
+
+  // Auto flight lookup when both airports set (AviationStack when keyed)
+  useEffect(() => {
+    if (!isFlight(mode) || !from || !to || !trip) return
+    let cancelled = false
+    const timer = window.setTimeout(async () => {
+      setFlightStatus('loading')
+      try {
+        const res = await lookupFlights({
+          fromName: from.name,
+          toName: to.name,
+          from: { lat: from.lat, lng: from.lng },
+          to: { lat: to.lat, lng: to.lng },
+          date: (tStart || `${trip.start_date}T12:00`).slice(0, 10),
+        })
+        if (cancelled) return
+        setFlightOptions(res.flights)
+        setFlightLink(res.googleFlights || '')
+        setFlightMsg(res.message || '')
+        const fill = res.live && res.flights[0] ? null : res.estimate
+        if (fill) {
+          setTStart(fill.departure)
+          setTEnd(fill.arrival)
+        }
+        setFlightStatus(res.flights.length || res.estimate ? 'ready' : 'empty')
+      } catch {
+        if (!cancelled) {
+          setFlightStatus('error')
+          setFlightMsg('Could not look up flights.')
+        }
+      }
+    }, 400)
+    return () => { cancelled = true; window.clearTimeout(timer) }
+  }, [from?.lat, from?.lng, to?.lat, to?.lng, mode, trip?.start_date])
 
   // Routes for one day or all days (multi-color when All days is selected)
   const dayRouteSignature = useMemo(() => {
@@ -514,6 +591,16 @@ export default function TripPage() {
   }
 
   const saveT = async (t: Trip) => { setTrip(t); await api.saveTrip(t) }
+  const saveMajorStops = (stops: Trip['major_stops']) => {
+    setTrip(prev => {
+      const next = { ...prev!, major_stops: stops }
+      if (majorStopsTimer.current) window.clearTimeout(majorStopsTimer.current)
+      majorStopsTimer.current = window.setTimeout(() => {
+        void api.saveTrip(next).catch(() => {})
+      }, 450)
+      return next
+    })
+  }
   const deleteThisTrip = async () => {
     if (!window.confirm(`Delete "${trip.name || 'Untitled Trip'}" and all of its itinerary items? This cannot be undone.`)) return
     try { await api.deleteTrip(trip.id); nav('/') } catch (x: any) { alert(`Could not delete the trip: ${x.message}`) }
@@ -598,6 +685,7 @@ export default function TripPage() {
     const dur = override?.duration ?? calc?.minutes ?? null
     const end = dur != null && start && !isFlight(mode) ? addMinutes(start, dur) : endIn
     const title = override?.title || `${from.name} → ${to.name}`
+    try { localStorage.setItem(LAST_ORIGIN_KEY, JSON.stringify(from)) } catch { /* ignore */ }
     addItems([{
       ...baseItem(trip, profile.id, items.length), type: 'transit', title,
       from_name: from.name, from_lat: from.lat, from_lng: from.lng, to_name: to.name, to_lat: to.lat, to_lng: to.lng,
@@ -639,9 +727,29 @@ export default function TripPage() {
     ])
   }
 
-  const addHotelFromList = (p: MapPoi) => {
-    setHotel({ name: p.name, display: p.name, lat: p.lat, lng: p.lng })
+  const addHotelFromList = async (p: MapPoi) => {
+    if (!trip || !profile) return
     setStayKind('hotel')
+    setHotel({ name: p.name, display: p.name, lat: p.lat, lng: p.lng })
+    const gid = newId()
+    const checkIn = hIn || `${trip.start_date}T15:00`
+    const checkOut = hOut || `${trip.end_date}T11:00`
+    const place = p.name
+    const common = {
+      ...baseItem(trip, profile.id, items.length),
+      type: 'hotel' as const,
+      group_id: gid,
+      title: p.name,
+      place_name: place,
+      lat: p.lat,
+      lng: p.lng,
+    }
+    await addItems([
+      { ...common, id: newId(), subtype: 'checkin', title: `${p.name} (Check-in)`, start_at: checkIn, end_at: checkIn, sort_order: items.length },
+      { ...common, id: newId(), subtype: 'checkout', title: `${p.name} (Check-out)`, start_at: checkOut, end_at: checkOut, sort_order: items.length + 1 },
+    ])
+    setSaveMsg(`Added ${p.name}`)
+    window.setTimeout(() => setSaveMsg(''), 2500)
   }
 
   const addExperienceFromList = async (p: MapPoi) => {
@@ -765,6 +873,22 @@ export default function TripPage() {
         }),
       })
     }
+    // Geocoded major stops always appear on the trip map
+    ;(trip.major_stops || []).forEach((s, i) => {
+      if (s.lat == null || s.lng == null) return
+      const already = out.some(p => Math.abs(p.lat - s.lat!) < 1e-4 && Math.abs(p.lng - s.lng!) < 1e-4)
+      if (already) return
+      const title = s.name || `Stop ${i + 1}`
+      out.push({
+        id: `major-stop-${trip.id}-${i}`,
+        lat: s.lat, lng: s.lng, name: title, kind: 'attraction',
+        savable: true, number: out.length + 1, color: '#0D9488',
+        label: buildPinPopup({
+          title, category: 'attraction', place: 'Major stop',
+          lat: s.lat, lng: s.lng, savable: true, itinerary: true, pinId: `major-stop-${trip.id}-${i}`,
+        }),
+      })
+    })
     return out
   })()
 
@@ -991,7 +1115,11 @@ export default function TripPage() {
       const res = await requestSuggestStops(id)
       setAiSuggestions((res.suggestions || []).filter(r => r.status === 'suggested'))
       if (res.organization_note) setAiOrgNote(res.organization_note)
-      if (res.reorder_ids?.length) await applyAiReorder(res.reorder_ids)
+      if (res.reorder_ids?.length) {
+        await applyAiReorder(res.reorder_ids)
+        setSaveMsg('Day order updated from Suggest itinerary')
+        window.setTimeout(() => setSaveMsg(''), 3500)
+      }
     } catch (e: any) {
       setAiSuggestErr(e.message || 'Could not suggest itinerary')
     } finally {
@@ -1302,9 +1430,16 @@ export default function TripPage() {
       <button className="btn-outline btn-small" onClick={deleteThisTrip} style={{ marginLeft: 8, color: '#c00', borderColor: '#c00' }}>Delete Trip</button>
       <h3 style={{ marginTop: 0, color: 'var(--slate-800)' }}>Create Items</h3>
       {saveMsg && <p className="saved-toast">{saveMsg}</p>}
+      <div className="create-tabs" role="tablist" aria-label="Create item type">
+        <button type="button" role="tab" aria-selected={createTab === 'transit'} className={createTab === 'transit' ? 'active' : ''} onClick={() => setCreateTab('transit')}>Transit</button>
+        <button type="button" role="tab" aria-selected={createTab === 'stay'} className={createTab === 'stay' ? 'active' : ''} onClick={() => setCreateTab('stay')}>Stay</button>
+        <button type="button" role="tab" aria-selected={createTab === 'places'} className={createTab === 'places' ? 'active' : ''} onClick={() => setCreateTab('places')}>Places</button>
+      </div>
 
+      {createTab === 'transit' && (
       <div style={{ borderTop: '2px solid var(--orange)', paddingTop: 6 }}>
         <h4>Transit</h4>
+        <p className="places-hint">Airports prefill when possible. Live schedules appear when AviationStack is configured.</p>
         <PlaceSearch
           key={`from-${from?.name ?? 'empty'}-${from?.lat ?? 0}`}
           label="From"
@@ -1423,40 +1558,45 @@ export default function TripPage() {
             )}
             {flightMsg && <p className="places-hint">{flightMsg}</p>}
             {flightOptions.length > 0 && (
-              <div className="pick-list" style={{ marginTop: 8 }}>
-                {flightOptions.map(f => (
-                  <button
-                    key={f.id}
-                    type="button"
-                    className="pick-row"
-                    onClick={() => {
-                      setTStart(f.departure)
-                      setTEnd(f.arrival)
-                      setMode('Airplane')
-                      setFrom(prev => prev ? {
-                        ...prev,
-                        name: prev.name.includes(f.depIata) ? prev.name : `${placePrimary(prev.name) || prev.name} (${f.depIata})`,
-                      } : prev)
-                      setTo(prev => prev ? {
-                        ...prev,
-                        name: prev.name.includes(f.arrIata) ? prev.name : `${placePrimary(prev.name) || prev.name} (${f.arrIata})`,
-                      } : prev)
-                      void addTransit({
-                        start: f.departure,
-                        end: f.arrival,
-                        duration: f.durationMinutes,
-                        title: `${f.flightNumber} · ${f.depIata} → ${f.arrIata}`,
-                      })
-                    }}
-                  >
-                    <span className="pick-row-main" style={{ pointerEvents: 'none' }}>
-                      <span><b>{f.flightNumber}</b> · {f.airline}</span>
-                      <span className="pick-row-cat">
-                        {f.depIata}→{f.arrIata} · {formatTransitTime(f.durationMinutes, 'Airplane')} · tap to add
+              <div className="flight-live-block" style={{ marginTop: 8 }}>
+                <p className="places-hint" style={{ marginBottom: 4 }}>
+                  {flightOptions.some(f => f.live) ? 'Live schedules — tap one to add' : 'Estimated options — tap to add'}
+                </p>
+                <div className="pick-list">
+                  {flightOptions.map(f => (
+                    <button
+                      key={f.id}
+                      type="button"
+                      className="pick-row"
+                      onClick={() => {
+                        setTStart(f.departure)
+                        setTEnd(f.arrival)
+                        setMode('Airplane')
+                        setFrom(prev => prev ? {
+                          ...prev,
+                          name: prev.name.includes(f.depIata) ? prev.name : `${placePrimary(prev.name) || prev.name} (${f.depIata})`,
+                        } : prev)
+                        setTo(prev => prev ? {
+                          ...prev,
+                          name: prev.name.includes(f.arrIata) ? prev.name : `${placePrimary(prev.name) || prev.name} (${f.arrIata})`,
+                        } : prev)
+                        void addTransit({
+                          start: f.departure,
+                          end: f.arrival,
+                          duration: f.durationMinutes,
+                          title: `${f.flightNumber} · ${f.depIata} → ${f.arrIata}`,
+                        })
+                      }}
+                    >
+                      <span className="pick-row-main" style={{ pointerEvents: 'none' }}>
+                        <span><b>{f.flightNumber}</b> · {f.airline}</span>
+                        <span className="pick-row-cat">
+                          {f.depIata}→{f.arrIata} · {formatTransitTime(f.durationMinutes, 'Airplane')} · tap to add
+                        </span>
                       </span>
-                    </span>
-                  </button>
-                ))}
+                    </button>
+                  ))}
+                </div>
               </div>
             )}
           </div>
@@ -1478,9 +1618,12 @@ export default function TripPage() {
           Add Transit
         </button>
       </div>
+      )}
 
-      <div style={{ borderTop: '2px solid var(--orange)', paddingTop: 6, marginTop: 14 }}>
+      {createTab === 'stay' && (
+      <div style={{ borderTop: '2px solid var(--orange)', paddingTop: 6 }}>
         <h4>Hotel / Stay</h4>
+        <p className="places-hint">Tap a nearby hotel to add check-in and check-out in one step.</p>
         <div className="stay-kind-toggle" role="group" aria-label="Stay type">
           <button type="button" className={stayKind === 'hotel' ? 'active' : ''} onClick={() => setStayKind('hotel')}>Hotel</button>
           <button type="button" className={stayKind === 'airbnb' ? 'active' : ''} onClick={() => setStayKind('airbnb')}>Airbnb</button>
@@ -1537,26 +1680,38 @@ export default function TripPage() {
         <button className="btn-orange" style={{ width: '100%', marginTop: 10 }} onClick={addHotel}>
           {stayKind === 'airbnb' ? 'Add Airbnb Stay' : 'Add Hotel Stay'}
         </button>
-        <p style={{ fontSize: 11 }}>Adds a check-in and a check-out card.</p>
+        <p style={{ fontSize: 11 }}>Search/Airbnb uses the Add button; list picks add immediately.</p>
       </div>
+      )}
 
-      <div style={{ borderTop: '2px solid var(--orange)', paddingTop: 6, marginTop: 14 }}>
-        <h4>Things to Do</h4>
-        <PlaceSearch label="Place" onPick={setAct} near={near} placeholder="Attraction or spot…" />
-        <label>Date &amp; Time</label><input type="datetime-local" value={aTime} onChange={e => setATime(e.target.value)} />
-        <button className="btn-orange" style={{ width: '100%', marginTop: 10 }} onClick={addActivity}>Add Thing to Do</button>
-      </div>
+      {createTab === 'places' && (
+      <div style={{ borderTop: '2px solid var(--orange)', paddingTop: 6 }}>
+        <h4>Places</h4>
+        <div className="stay-kind-toggle" role="group" aria-label="Place type">
+          <button type="button" className={placeKind === 'experience' ? 'active' : ''} onClick={() => setPlaceKind('experience')}>Experiences</button>
+          <button type="button" className={placeKind === 'activity' ? 'active' : ''} onClick={() => setPlaceKind('activity')}>Things to do</button>
+          <button type="button" className={placeKind === 'restaurant' ? 'active' : ''} onClick={() => setPlaceKind('restaurant')}>Restaurant</button>
+        </div>
 
-      <div style={{ borderTop: '2px solid var(--orange)', paddingTop: 6, marginTop: 14 }}>
-        <h4>Restaurant</h4>
-        <PlaceSearch label="Restaurant / Place" onPick={setRest} near={near} placeholder="Restaurant name…" />
-        <label>Date &amp; Time</label><input type="datetime-local" value={rTime} onChange={e => setRTime(e.target.value)} />
-        <button className="btn-orange" style={{ width: '100%', marginTop: 10 }} onClick={addRestaurant}>Add Restaurant</button>
-      </div>
+        {placeKind === 'activity' && (
+          <>
+            <PlaceSearch label="Place" onPick={setAct} near={near} placeholder="Attraction or spot…" />
+            <label>Date &amp; Time</label><input type="datetime-local" value={aTime} onChange={e => setATime(e.target.value)} />
+            <button className="btn-orange" style={{ width: '100%', marginTop: 10 }} onClick={addActivity}>Add Thing to Do</button>
+          </>
+        )}
 
-      <div style={{ borderTop: '2px solid var(--orange)', paddingTop: 6, marginTop: 14 }}>
-        <h4>Experiences</h4>
-        <p className="places-hint">Search an attraction, or pick from nearby results. Set a date &amp; time, then add.</p>
+        {placeKind === 'restaurant' && (
+          <>
+            <PlaceSearch label="Restaurant / Place" onPick={setRest} near={near} placeholder="Restaurant name…" />
+            <label>Date &amp; Time</label><input type="datetime-local" value={rTime} onChange={e => setRTime(e.target.value)} />
+            <button className="btn-orange" style={{ width: '100%', marginTop: 10 }} onClick={addRestaurant}>Add Restaurant</button>
+          </>
+        )}
+
+        {placeKind === 'experience' && (
+          <>
+        <p className="places-hint">Tap Add on a nearby result, or search first.</p>
         <PlaceSearch
           label="Search experiences"
           near={near}
@@ -1613,7 +1768,10 @@ export default function TripPage() {
             </div>
           ))}
         </div>
+          </>
+        )}
       </div>
+      )}
     </aside>
   )
 
@@ -1915,7 +2073,10 @@ export default function TripPage() {
           <div className="trip-meta-bar">
             <div className="trip-meta-field trip-meta-name">
               <label htmlFor="trip-name-field">Trip Name</label>
-              <input id="trip-name-field" value={trip.name} onChange={e => saveT({ ...trip, name: e.target.value })} />
+              <div className="trip-meta-name-row">
+                <input id="trip-name-field" value={trip.name} onChange={e => saveT({ ...trip, name: e.target.value })} />
+                <AvatarStack people={tripPeople} size={30} />
+              </div>
             </div>
             <div className="trip-meta-field trip-meta-dates">
               <label>Dates</label>
@@ -1928,7 +2089,11 @@ export default function TripPage() {
             </div>
             <div className="trip-meta-field trip-meta-stops">
               <label>Major Stops</label>
-              <MajorStopsInput value={trip.major_stops} onChange={stops => saveT({ ...trip, major_stops: stops })} />
+              <MajorStopsInput
+                value={trip.major_stops}
+                near={near}
+                onChange={saveMajorStops}
+              />
             </div>
           </div>
           {saveMsg && <p className="saved-toast trip-save-toast">{saveMsg}</p>}

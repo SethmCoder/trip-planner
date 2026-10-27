@@ -89,6 +89,15 @@ export interface TripCollaborator {
   role: 'editor' | 'viewer'
   created_at: string
   username?: string
+  avatar_url?: string | null
+}
+
+/** Owner + collaborators shown on shared trip cards. */
+export interface TripPerson {
+  id: string
+  username: string
+  avatar_url: string | null
+  role: 'owner' | 'editor' | 'viewer'
 }
 
 export interface ItinerarySuggestion {

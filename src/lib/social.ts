@@ -1,5 +1,5 @@
 import { supabase, isSupabaseConfigured } from './supabase'
-import { newId, type Friendship, type TripCollaborator, type SavedPlace } from './types'
+import { newId, type Friendship, type TripCollaborator, type TripPerson, type SavedPlace } from './types'
 import { listSavedPlaces } from './data'
 
 const LOCAL_FRIENDS = 'travel-log-friends-v1'
@@ -177,11 +177,51 @@ export async function listCollaborators(tripId: string): Promise<TripCollaborato
       throw new Error(error.message)
     }
     const profiles = await profilesByIds((data ?? []).map(c => c.user_id))
-    return (data ?? []).map(c => ({ ...c, username: profiles[c.user_id]?.username }))
+    return (data ?? []).map(c => ({
+      ...c,
+      username: profiles[c.user_id]?.username,
+      avatar_url: profiles[c.user_id]?.avatar_url ?? null,
+    }))
   }
   const rows = loadSocial().collaborators.filter(c => c.trip_id === tripId)
   const profiles = await profilesByIds(rows.map(c => c.user_id))
-  return rows.map(c => ({ ...c, username: profiles[c.user_id]?.username }))
+  return rows.map(c => ({
+    ...c,
+    username: profiles[c.user_id]?.username,
+    avatar_url: profiles[c.user_id]?.avatar_url ?? null,
+  }))
+}
+
+/** Owner plus collaborators for a trip (avatars for shared-trip UI). */
+export async function listTripPeople(trip: { id: string; user_id: string }): Promise<TripPerson[]> {
+  const collabs = await listCollaborators(trip.id)
+  const ids = [trip.user_id, ...collabs.map(c => c.user_id)]
+  const profiles = await profilesByIds(ids)
+  const people: TripPerson[] = [{
+    id: trip.user_id,
+    username: profiles[trip.user_id]?.username || 'Owner',
+    avatar_url: profiles[trip.user_id]?.avatar_url ?? null,
+    role: 'owner',
+  }]
+  for (const c of collabs) {
+    if (c.user_id === trip.user_id) continue
+    people.push({
+      id: c.user_id,
+      username: c.username || profiles[c.user_id]?.username || 'Traveler',
+      avatar_url: c.avatar_url ?? profiles[c.user_id]?.avatar_url ?? null,
+      role: c.role,
+    })
+  }
+  return people
+}
+
+/** Batch people map for trip cards. */
+export async function listPeopleByTrips(trips: { id: string; user_id: string }[]): Promise<Record<string, TripPerson[]>> {
+  const out: Record<string, TripPerson[]> = {}
+  await Promise.all(trips.map(async t => {
+    out[t.id] = await listTripPeople(t)
+  }))
+  return out
 }
 
 export async function shareSavedPlace(placeId: string, ownerId: string, friendUserId: string): Promise<void> {

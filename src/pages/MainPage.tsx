@@ -1,12 +1,14 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import TopBar from '../components/TopBar'
 import MapView from '../components/MapView'
 import MajorStopsInput from '../components/MajorStopsInput'
 import StatusBadge from '../components/StatusBadge'
 import DestinationThumb from '../components/DestinationThumb'
+import AvatarStack from '../components/AvatarStack'
 import { useAuth } from '../context/AuthContext'
 import * as api from '../lib/data'
+import * as social from '../lib/social'
 import { searchPlaces, type GeoResult } from '../lib/geocoding'
 import { placePrimary, placeSecondary } from '../lib/formatPlace'
 import {
@@ -15,6 +17,7 @@ import {
   newId,
   tripDurationDays,
   type Trip,
+  type TripPerson,
 } from '../lib/types'
 import { resolveTripImage } from '../lib/tripImages'
 import { destinationTravelLinks } from '../lib/travelApps'
@@ -56,12 +59,18 @@ function TripForm({
 }) {
   const [placeQ, setPlaceQ] = useState(trip.place)
   const [results, setResults] = useState<GeoResult[]>([])
+  const [searching, setSearching] = useState(false)
+  const searchTimer = useRef<number | null>(null)
   const upd = (p: Partial<Trip>) => onChange({ ...trip, ...p })
+
+  useEffect(() => () => { if (searchTimer.current) window.clearTimeout(searchTimer.current) }, [])
 
   return (
     <div className="trip-form selected">
       <h3 style={{ margin: '0 0 4px', fontSize: 16 }}>{saveLabel === 'Create Trip' ? 'Create Trip' : 'Edit Trip'}</h3>
-      <p style={{ margin: '0 0 8px', fontSize: 13, color: 'var(--text-secondary)' }}>Fill in the details below. Destination search uses OpenStreetMap.</p>
+      <p style={{ margin: '0 0 8px', fontSize: 13, color: 'var(--text-secondary)' }}>
+        Name, destination, and dates — then you land on the trip to build the itinerary.
+      </p>
 
       <label htmlFor={`trip-name-${trip.id}`}>Trip Name</label>
       <input id={`trip-name-${trip.id}`} value={trip.name} onChange={e => upd({ name: e.target.value })} placeholder="Trip name" />
@@ -70,16 +79,22 @@ function TripForm({
       <input
         id={`trip-place-${trip.id}`}
         value={placeQ}
-        onChange={async e => {
+        onChange={e => {
           const v = e.target.value
           setPlaceQ(v)
           upd({ place: v, place_lat: null, place_lng: null })
-          if (v.length > 2) setResults(await searchPlaces(v))
-          else setResults([])
+          if (searchTimer.current) window.clearTimeout(searchTimer.current)
+          if (v.trim().length < 2) { setResults([]); setSearching(false); return }
+          setSearching(true)
+          searchTimer.current = window.setTimeout(async () => {
+            setResults(await searchPlaces(v))
+            setSearching(false)
+          }, 280)
         }}
         placeholder="City or destination…"
         autoComplete="off"
       />
+      {searching && <p className="places-hint">Searching…</p>}
       {results.length > 0 && (
         <div className="autocomplete" role="listbox">
           {results.map((r, i) => {
@@ -138,11 +153,13 @@ function TripForm({
 
 function TripDetail({
   trip,
+  people,
   onOpen,
   onEdit,
   onDelete,
 }: {
   trip: Trip
+  people: TripPerson[]
   onOpen: () => void
   onEdit: () => void
   onDelete: () => void
@@ -182,7 +199,10 @@ function TripDetail({
           <div style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 8 }}>
             {trip.place || 'Destination not set'}
           </div>
-          <StatusBadge status={trip.booking_status} />
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+            <StatusBadge status={trip.booking_status} />
+            <AvatarStack people={people} size={30} />
+          </div>
         </div>
       </div>
 
@@ -232,11 +252,13 @@ export default function MainPage() {
   const [mode, setMode] = useState<Mode>('list')
   const [draft, setDraft] = useState<Trip | null>(null)
   const [sidebarOpen, setSidebarOpen] = useState(false)
+  const [peopleByTrip, setPeopleByTrip] = useState<Record<string, TripPerson[]>>({})
 
   useEffect(() => {
     if (!profile) return
     api.listTrips(profile.id).then(async list => {
       setTrips(list)
+      social.listPeopleByTrips(list).then(setPeopleByTrip).catch(() => setPeopleByTrip({}))
       // Backfill destination photos for trips that have a place but no image yet
       for (const t of list) {
         if (t.image_url || !t.place) continue
@@ -291,15 +313,21 @@ export default function MainPage() {
 
   const saveDraft = async () => {
     if (!draft || dateError) return
+    const wasCreate = mode === 'create'
     try {
       await api.saveTrip(draft)
       setTrips(prev => {
         const exists = prev.some(t => t.id === draft.id)
         return exists ? prev.map(t => (t.id === draft.id ? draft : t)) : [...prev, draft]
       })
-      setSelectedId(draft.id)
-      setMode('detail')
+      const id = draft.id
+      setSelectedId(id)
       setDraft(null)
+      if (wasCreate) {
+        nav(`/trip/${id}`)
+        return
+      }
+      setMode('detail')
     } catch (x: any) {
       alert(`Could not save the trip: ${x.message}`)
     }
@@ -362,6 +390,7 @@ export default function MainPage() {
             {mode === 'detail' && selected && (
               <TripDetail
                 trip={selected}
+                people={peopleByTrip[selected.id] || []}
                 onOpen={() => nav(`/trip/${selected.id}`)}
                 onEdit={() => startEdit(selected)}
                 onDelete={() => deleteTrip(selected)}
@@ -406,6 +435,7 @@ export default function MainPage() {
                         </div>
                       </div>
                       <div className="trip-card-footer">
+                        <AvatarStack people={peopleByTrip[t.id] || []} size={26} />
                         <StatusBadge status={t.booking_status} />
                         <span style={{ fontSize: 12, color: 'var(--orange)', fontWeight: 600 }}>View</span>
                       </div>
@@ -422,7 +452,6 @@ export default function MainPage() {
           selectedId={selectedId}
           onPinClick={id => selectTrip(id)}
           showUserLocation
-          enableNearbyPois
           displayLanguage={profile?.preferred_language || 'en'}
         >
           <button

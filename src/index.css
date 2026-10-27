@@ -937,6 +937,15 @@ label {
   font-size: 16px;
   font-weight: 700;
 }
+.trip-meta-name-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.trip-meta-name-row input {
+  flex: 1;
+  min-width: 0;
+}
 .trip-meta-dates-row {
   display: flex;
   align-items: center;
@@ -1868,9 +1877,37 @@ label {
   margin: 0;
   white-space: nowrap;
 }
+.create-tabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 6px;
+  margin: 8px 0 12px;
+}
+.create-tabs button {
+  min-height: 36px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--white);
+  color: var(--text-secondary);
+  font-weight: 600;
+  font-size: 13px;
+  font-family: inherit;
+  cursor: pointer;
+}
+.create-tabs button.active {
+  background: var(--orange-light);
+  border-color: #FDBA74;
+  color: var(--orange-hover);
+}
+.flight-live-block {
+  border: 1px solid #FDBA74;
+  border-radius: var(--radius-sm);
+  padding: 8px;
+  background: var(--orange-light);
+}
 .stay-kind-toggle {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(auto-fit, minmax(90px, 1fr));
   gap: 6px;
   margin: 8px 0 10px;
 }
@@ -2142,6 +2179,70 @@ label {
   align-items: center;
   justify-content: center;
   font-weight: 700;
+}
+
+/* Shared-trip traveler stack — slight vertical wobble, not a perfect line */
+.avatar-stack {
+  --avatar-size: 28px;
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  padding: 2px 0;
+}
+.avatar-stack-item {
+  width: var(--avatar-size);
+  height: var(--avatar-size);
+  border-radius: 50%;
+  border: 2px solid var(--white);
+  overflow: hidden;
+  flex: none;
+  margin-left: calc(var(--avatar-size) * -0.32);
+  background: var(--slate-500);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.12);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.avatar-stack-item:first-child {
+  margin-left: 0;
+}
+.avatar-stack-offset-0 {
+  transform: translateY(-3px) rotate(-4deg);
+}
+.avatar-stack-offset-1 {
+  transform: translateY(3px) rotate(3deg);
+}
+.avatar-stack-offset-2 {
+  transform: translateY(-1px) rotate(-2deg);
+}
+.avatar-stack-item img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.avatar-stack-fallback,
+.avatar-stack-more {
+  width: 100%;
+  height: 100%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: calc(var(--avatar-size) * 0.38);
+  font-weight: 700;
+  color: #fff;
+  background: var(--slate-500);
+}
+.avatar-stack-more {
+  background: var(--orange);
+  font-size: calc(var(--avatar-size) * 0.32);
+}
+.trip-card.selected .avatar-stack-item,
+.trip-detail .avatar-stack-item {
+  border-color: var(--orange-light);
+}
+.trip-card-footer .avatar-stack {
+  margin-right: auto;
 }
 
 .flights-layout {

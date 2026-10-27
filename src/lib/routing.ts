@@ -84,16 +84,16 @@ export async function getQuickestRoute(from: LatLng, to: LatLng, mode: string): 
     const km = haversineKm(from, to)
     return { minutes: Math.max(20, Math.round(km / 750 * 60) + 30), distanceKm: km, path: greatCirclePath(from, to), source: 'shortest flight route (great-circle, estimated time)' }
   }
-  if (/walk|foot/i.test(mode || '')) {
-    const km = haversineKm(from, to)
-    return { minutes: Math.max(2, Math.round(km / 5 * 60)), distanceKm: km, path: [from, to], source: 'walking estimate' }
-  }
   if (/train|rail/i.test(mode || '')) {
     const km = haversineKm(from, to)
     return { minutes: Math.max(15, Math.round(km / 90 * 60) + 10), distanceKm: km, path: greatCirclePath(from, to, 24), source: 'rail estimate' }
   }
   try {
-    const profile = /bike|cycl/i.test(mode || '') ? 'bike' : 'driving'
+    const profile = /walk|foot/i.test(mode || '')
+      ? 'foot'
+      : /bike|cycl/i.test(mode || '')
+        ? 'bike'
+        : 'driving'
     const url = `https://router.project-osrm.org/route/v1/${profile}/${from.lng},${from.lat};${to.lng},${to.lat}?overview=full&geometries=geojson&alternatives=3&steps=false`
     const r = await fetch(url)
     const j = await r.json()
@@ -102,9 +102,14 @@ export async function getQuickestRoute(from: LatLng, to: LatLng, mode: string): 
       const quickest = routes.reduce((best, rt) => (rt.duration < best.duration ? rt : best), routes[0])
       const coords: [number, number][] = quickest.geometry?.coordinates ?? []
       const path = coords.map(([lng, lat]) => ({ lat, lng }))
-      return { minutes: Math.round(quickest.duration / 60), distanceKm: (quickest.distance ?? 0) / 1000, path: path.length > 1 ? path : [from, to], source: 'quickest route calculated with OpenStreetMap (OSRM)' }
+      const label = profile === 'foot' ? 'walking route (OSRM)' : 'quickest route calculated with OpenStreetMap (OSRM)'
+      return { minutes: Math.round(quickest.duration / 60), distanceKm: (quickest.distance ?? 0) / 1000, path: path.length > 1 ? path : [from, to], source: label }
     }
   } catch { /* fall through */ }
+  if (/walk|foot/i.test(mode || '')) {
+    const km = haversineKm(from, to)
+    return { minutes: Math.max(2, Math.round(km / 5 * 60)), distanceKm: km, path: [from, to], source: 'walking estimate' }
+  }
   const km = haversineKm(from, to)
   return { minutes: Math.max(5, Math.round(km / 50 * 60)), distanceKm: km, path: [from, to], source: 'estimated from distance' }
 }
@@ -161,6 +166,10 @@ export async function estimateGapTravel(from: LatLng, to: LatLng, preferredMode?
 
   if (mode) {
     if (/walk/i.test(mode)) {
+      try {
+        const route = await getQuickestRoute(from, to, 'Walking')
+        if (route) return gapFromMode('Walking', route.minutes)
+      } catch { /* fall through */ }
       return gapFromMode('Walking', Math.max(2, Math.round(km / 5 * 60)))
     }
     if (/air|flight|plane/i.test(mode)) {
@@ -186,7 +195,13 @@ export async function estimateGapTravel(from: LatLng, to: LatLng, preferredMode?
     return gapFromMode('Driving', Math.max(5, Math.round(km / 50 * 60)))
   }
 
-  if (km <= 2) return gapFromMode('Walking', Math.max(2, Math.round(km / 5 * 60)))
+  if (km <= 2) {
+    try {
+      const walk = await getQuickestRoute(from, to, 'Walking')
+      if (walk) return gapFromMode('Walking', walk.minutes)
+    } catch { /* fall through */ }
+    return gapFromMode('Walking', Math.max(2, Math.round(km / 5 * 60)))
+  }
   if (km > 400) return gapFromMode('Airplane', Math.max(20, Math.round(km / 750 * 60) + 30))
   const route = await getQuickestRoute(from, to, 'Car')
   if (route && route.source.includes('OSRM')) return gapFromMode('Driving', route.minutes)
